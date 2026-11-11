@@ -60,7 +60,7 @@ sources = [
   'src/engine_materials.cpp', 'src/material_shading.cpp', 'src/pbr_rules.cpp',
   'src/vertex_program.cpp', 'src/particles.cpp', 'src/diag.cpp', 'src/lzma_source.cpp',
   'src/host_passes.cpp', 'src/vb_origins.cpp', 'src/bake_sky.cpp', 'src/bake_sky_cache.cpp',
-  'src/source_lights.cpp', 'src/styled_lights.cpp', 'src/frame_profile.cpp',
+  'src/source_lights.cpp', 'src/styled_lights.cpp', 'src/frame_profile.cpp', 'src/light_editor.cpp',
   'src/shader_tables.cpp', 'src/fixed_function.cpp',
   'deps/lzma/LzmaDec.c', host_shaders,
 ]

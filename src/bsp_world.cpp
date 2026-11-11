@@ -4911,6 +4911,8 @@ bool load(const remixapi_Interface &api, const std::string &requestedMap, LoadOp
 
 bool active() { return g_active; }
 
+const std::string &mapName() { return g_world.map; }
+
 bool isDetailSpriteMaterial(const char *materialName) {
   return materialName && *materialName && g_detailMaterial == materialName;
 }

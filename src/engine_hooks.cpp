@@ -6,6 +6,7 @@
 #include "engine_shadows.h"
 #include "game.h"
 #include "frame_profile.h"
+#include "light_editor.h"
 
 #include <windows.h>
 
@@ -221,6 +222,15 @@ bool install() {
     g_mainThread = GetCurrentThreadId();
   if (done) {
     applyForcedSettings();
+    // The map light editor's teleports (its setpos and setang), from the
+    // main thread, which owns the command buffer.
+    if (g_engineClient && GetCurrentThreadId() == g_mainThread) {
+      light_editor::setTeleportAvailable(true);
+      std::string command;
+      using ClientCmdFn = void (*)(void *, const char *);
+      while (light_editor::takeCommand(command)) // IVEngineClient013 slot 106: ClientCmd_Unrestricted
+        reinterpret_cast<ClientCmdFn>((*static_cast<void ***>(g_engineClient))[106])(g_engineClient, command.c_str());
+    }
     engine_mirrors::install();
     return true;
   }

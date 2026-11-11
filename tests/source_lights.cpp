@@ -121,6 +121,29 @@ int main() {
   light.color[0] = std::numeric_limits<float>::infinity();
   require(!createLight(api, light, 128), "Nonfinite radiance rejected");
   light.color[0] = 1;
+  // Edited parameters (the map light editor): describeLight gives what
+  // createLight makes; the edit replaces type, radius, shaping, volumetric
+  // scale and radiance, and a disabled light keeps its slot with none.
+  light.type = 1;
+  LightParams params;
+  require(describeLight(light, params) && params.type == 1 && params.radius == 2 && params.volumetric == 1,
+          "describeLight matches the default conversion");
+  params.type = 3;
+  params.radius = 8;
+  params.coneAngle = 30;
+  params.volumetric = 2.5f;
+  params.radiance[0] = 7;
+  require(createLight(api, light, params, 132) && sphere.radius == 8 && sphere.shaping_hasvalue &&
+              sphere.shaping_value.coneAngleDegrees == 30 && sphere.shaping_value.direction.z == -1 &&
+              sphere.volumetricRadianceScale == 2.5f && radiance.x == 7,
+          "Edited point light becomes a spot with its radius, cone and volumetric scale");
+  params.type = 2;
+  params.radius = 1.5f;
+  require(createLight(api, light, params, 133) && distant.angularDiameterDegrees == 1.5f && distant.direction.z == -1,
+          "Edited directional light takes the angular diameter and a downward direction");
+  params.enabled = false;
+  require(createLight(api, light, params, 134) && radiance.x == 0 && radiance.y == 0 && radiance.z == 0,
+          "Disabled light keeps its slot without radiance");
   reject = true;
   require(!createLight(api, light, 129), "Runtime rejection is propagated");
   std::puts("Source light units, intensity, surface sidedness, spot cones and ABI passed");

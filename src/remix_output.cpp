@@ -4,6 +4,7 @@
 #include "styled_lights.h"
 #include "diag.h"
 #include "frame_profile.h"
+#include "light_editor.h"
 #include <map>
 #include <tuple>
 #include "remix_output.h"
@@ -1847,6 +1848,9 @@ std::unordered_map<uint64_t, CachedLight> g_lights;
 // map lights, dlights, projected textures): the contents' hash. When it
 // changes the Remix light is redefined under the same hash.
 std::unordered_map<uint64_t, uint64_t> g_lightDefinitions;
+// This frame's map lights a person edited (light_editor), by hash: created
+// with these parameters in place of describeLight's.
+std::unordered_map<uint64_t, lighting::LightParams> g_frameEdits;
 
 float envScale(const char *name, float fallback) {
   char v[32] = {};
@@ -8015,6 +8019,7 @@ void onPresent() {
         eye[i] = -(main->view[12] * main->view[i * 4] + main->view[13] * main->view[i * 4 + 1] +
                    main->view[14] * main->view[i * 4 + 2]);
       g_cameraInWater = underwater && bsp::waterAt(eye, color, distance, &fogEnd);
+      light_editor::setCamera(main->view, main->projection);
       if (g_cameraInWater) {
         medium.inside = 1;
         medium.transmittanceColor = {color[0], color[1], color[2]};
@@ -8551,6 +8556,12 @@ void onPresent() {
     const auto engineLights = engine_lights::current();
     uint32_t styled = 0, styledOff = 0, duplicates = 0, projectedCopies = 0;
     g_lightDefinitions.clear();
+    g_frameEdits.clear();
+    {
+      static const float lightScale = envScale("OPENREMIX_PROXY_LIGHT_SCALE", 1.0f);
+      static const float sunScale = envScale("OPENREMIX_PROXY_SUN_SCALE", 1.0f);
+      light_editor::sync(lightScale, sunScale);
+    }
     // Dlights the engine also handed to a model (SetLight): one light.
     // Likewise a projected texture (the flashlight) given to the models in
     // its beam: that copy has no identity (it is keyed by its contents), so
@@ -8601,6 +8612,22 @@ void onPresent() {
       l.thetaDot = b.thetaDot;
       l.phiDot = b.phiDot;
       l.forwardCutoff = b.forwardCutoff;
+      // Edited in the developer panel (light_editor): its parameters, scaled
+      // by its lightstyle as below, and a definition that changes with them.
+      lighting::LightParams edit;
+      uint64_t revision = 0;
+      if (light_editor::edited(b.hash, edit, revision)) {
+        const float value = b.style && engineLights && engineLights->styles && b.style > 0 && b.style < 128
+                                ? engineLights->style[b.style]
+                                : 1.0f;
+        for (float &c : edit.radiance)
+          c *= value > 0 ? value : 0.0f;
+        g_frameLights[b.hash] = l;
+        g_frameEdits[b.hash] = edit;
+        const uint64_t named[2] = {fnv(&edit, sizeof(edit)), revision};
+        g_lightDefinitions[b.hash] = fnv(named, sizeof(named), fnv(&l, sizeof(l))) | 1;
+        continue;
+      }
       if (b.style) {
         // Switchable and flickering lights: scaled by their lightstyle (off at 0).
         const float value = engineLights && engineLights->styles && b.style > 0 && b.style < 128
@@ -8653,7 +8680,9 @@ void onPresent() {
       if (!cached.handle || cached.definition != definition) {
         // CreateLight under an existing hash replaces that light in place
         // (same handle).
-        const remixapi_LightHandle handle = createLight(l, hash);
+        const auto edit = g_frameEdits.find(hash);
+        const remixapi_LightHandle handle =
+            edit != g_frameEdits.end() ? lighting::createLight(g_api, l, edit->second, hash) : createLight(l, hash);
         if (!handle)
           continue;
         cached.handle = handle;

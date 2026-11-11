@@ -99,6 +99,8 @@ bool playerStart(float origin[3], float angles[3]);
 
 // The BSP world is loaded: world draws are dropped.
 bool active();
+// The loaded map's name (lower case, no folder or extension); empty without one.
+const std::string &mapName();
 
 // The BSP world draws the map's overlays: engine overlay draws are dropped.
 bool overlaysActive();
