@@ -909,6 +909,9 @@ float g_screenUvRows[8] = {};
 std::string g_screenMaterial;
 remixapi_MaterialHandle g_screenMaterials[REMIXAPI_SCREEN_CAMERA_SLOTS_EXT] = {};
 constexpr uint64_t kScreenFrames = 30;
+// Views into a render-target texture that are the main view reflected in
+// water (mirroredView): not screen cameras (statistics).
+std::atomic<uint64_t> g_mirroredViews{0};
 
 // At a "world_lists 1" marker drawn into a render-target texture: that view's
 // matrices (left-handed, as world views are stored).
@@ -2241,6 +2244,20 @@ bool samePlacement(const float *a, const float *b) {
     if (std::fabs(a[i] - b[i]) > 1e-2f)
       return false;
   return true;
+}
+// A water reflection's view of `main`: the engine draws it from the main
+// camera's pose reflected about the water's (horizontal) plane, a camera
+// below the water looking up (its image upside down): the same place in x
+// and y at another height, its right and forward axes the main camera's with
+// z negated. (Views as stored: right, up and forward in the columns.)
+bool mirroredView(const float *v, const float *main) {
+  auto eye = [](const float *m, int i) { return -(m[12] * m[i * 4] + m[13] * m[i * 4 + 1] + m[14] * m[i * 4 + 2]); };
+  for (int axis = 0; axis < 3; axis += 2)
+    for (int i = 0; i < 3; ++i)
+      if (std::fabs(v[i * 4 + axis] - (i == 2 ? -main[i * 4 + axis] : main[i * 4 + axis])) > 2e-3f)
+        return false;
+  return std::fabs(eye(v, 0) - eye(main, 0)) < 0.5f && std::fabs(eye(v, 1) - eye(main, 1)) < 0.5f &&
+         std::fabs(eye(v, 2) - eye(main, 2)) > 1e-2f;
 }
 std::unordered_map<uint64_t, View> g_views;
 View g_lastCamera; // for statistics
@@ -7932,7 +7949,13 @@ void onPresent() {
     const View *viewModel = nullptr, *sky = nullptr;
     for (auto &[key, v] : g_views) {
       Role role = Role::Skip;
-      if (v.screenTarget && key != mainKey && !samePlacement(v.view, main->view)) {
+      if (v.screenTarget && key != mainKey && v.perspective && mirroredView(v.view, main->view)) {
+        // This frame's main view reflected in water: no camera's (the
+        // "world_lists" marker tells it by the frame before's camera, which
+        // a moving camera's reflection does not match).
+        g_screenViews.erase(v.screenTarget);
+        ++g_mirroredViews;
+      } else if (v.screenTarget && key != mainKey && !samePlacement(v.view, main->view)) {
         // Its camera's own view (not the skybox view drawn into it first, nor
         // the main camera's scene drawn again into a texture by an effect).
         const auto it = g_screenViews.find(v.screenTarget);
@@ -9672,11 +9695,12 @@ void dumpStatistics(FILE *out) {
   }
   fprintf(out, "   world-list draws: dropped (BSP world) %.1f, kept blended %.1f, kept dynamic %.1f | $translucent "
                "world draws with an opaque texture, drawn opaque %.1f | screen camera draws %.1f (views %zu, "
-               "refused for want of a slot %.1f; instances only screen views see %.1f)\n",
+               "refused for want of a slot %.1f; instances only screen views see %.1f; mirrored views (water "
+               "reflections) left out %.1f)\n",
           g_stats.bspDropped.exchange(0) / f, g_stats.bspKeptBlended.exchange(0) / f,
           g_stats.bspKeptDynamic.exchange(0) / f, g_stats.opaqueTranslucent.exchange(0) / f,
           g_stats.screenDraws.exchange(0) / f, g_screenViews.size(), g_stats.screenViewsFull.exchange(0) / f,
-          g_stats.screenInstances.exchange(0) / f);
+          g_stats.screenInstances.exchange(0) / f, g_mirroredViews.exchange(0) / f);
 #ifdef PROXY_GAME_PORTAL2
   {
     // The engine's portal views (portal2.h), per frame.
@@ -10520,7 +10544,16 @@ bool onMarker(const char *text) {
           }
           // Not the main camera's own view drawn again (an effect's
           // render.RenderView of the scene, as dev_ssr's): no screen shows it.
-          if (!samePlacement(w.view, g_lastCamera.view))
+          // Nor the main view reflected in water (drawn into the reflection's
+          // render target while the water is in view): no camera's view. As
+          // a screen camera's, what it drew that the main view did not (the
+          // world beyond the main view's frustum: dynamic world draws, a
+          // self-illuminated brush that lights the map) came into the scene a
+          // second time, reflection-only, and lit it: the map brighter
+          // whenever water came into view (gm_excess_construct_13).
+          if (mirroredView(w.view, g_lastCamera.view))
+            ++g_mirroredViews;
+          else if (!samePlacement(w.view, g_lastCamera.view))
             noteScreenView(target, w.view, w.projection);
         }
       }
