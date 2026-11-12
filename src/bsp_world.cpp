@@ -1076,6 +1076,7 @@ struct World {
   // Statistics.
   uint32_t faces = 0, displacements = 0, skyFaces = 0, skippedTranslucent = 0, skippedIgnored = 0, keptIgnored = 0, triangles = 0;
   uint32_t propModelsFailed = 0, propParts = 0, skyProps = 0;
+  uint32_t skyPropsByLeaf = 0; // of skyProps: told by their leaves (origin in solid)
   std::vector<std::string> failedModels;
   std::vector<Light> lights;
   std::vector<std::array<float, 3>> reflectionSeeds;
@@ -2695,6 +2696,7 @@ template <typename InSky> void loadProps(const Bsp &bsp, const InSky &inSky) {
   const int32_t names = i32(lump, 0);
   size_t at = 4 + size_t(std::max(names, 0)) * 128;
   const int32_t leaves = i32(lump, at);
+  const size_t leafList = at + 4;
   at += 4 + size_t(std::max(leaves, 0)) * 2;
   const int32_t props = i32(lump, at);
   at += 4;
@@ -2723,7 +2725,25 @@ template <typename InSky> void loadProps(const Bsp &bsp, const InSky &inSky) {
     // sky camera, which the engine's sky view already draws in full.
     Prop prop;
     angleMatrix(angles, origin, prop.transform);
-    if (inSky(origin)) {
+    // A prop of the 3D skybox: its origin in the skybox, or, where the origin
+    // lies in solid (a building sunk into the skybox's ground:
+    // gm_excess_construct_13's), the leaves the map compiler listed it in
+    // (record offsets 26 and 28: first leaf and count in the lump's leaf list).
+    bool skyProp = inSky(origin);
+    if (!skyProp && g_world.skyArea >= 0) {
+      uint16_t firstLeaf = 0, leafCount = 0;
+      if (get(lump, rec + 26, firstLeaf) && get(lump, rec + 28, leafCount))
+        for (uint32_t l = firstLeaf; l < uint32_t(firstLeaf) + leafCount && l < uint32_t(std::max(leaves, 0)); ++l) {
+          uint16_t leaf = 0;
+          if (get(lump, leafList + size_t(l) * 2, leaf) && leaf < g_world.leafAreas.size() &&
+              g_world.leafAreas[leaf] == g_world.skyArea) {
+            skyProp = true;
+            ++g_world.skyPropsByLeaf;
+            break;
+          }
+        }
+    }
+    if (skyProp) {
       ++g_world.skyProps;
       if (!g_world.skyTraced)
         continue;
@@ -6227,13 +6247,13 @@ void dumpStatistics(FILE *out) {
   fprintf(out,
           "   BSP world %s: faces %u displacements %u (sky %u) triangles %u | materials %u/%zu resolved | groups %zu "
           "(meshes %u) | left to the engine: translucent %u, ignored %u | rtx.conf-ignored brush materials kept %u | sky camera %d | corners with smoothed normals %u\n"
-          "   BSP static props: %zu placements (%u in the 3D skybox), %zu models (%u failed), %u parts | overlays %u "
+          "   BSP static props: %zu placements (%u in the 3D skybox, %u of them told by their leaves), %zu models (%u failed), %u parts | overlays %u "
           "(%u triangles, %zu groups) | func_lod brushes %u (%u faces; left to the engine %u) | water materials %u | surface normal textures %u (animated %u; "
           "water optional via OPENREMIX_PROXY_WATER_NORMALS), water downward faces left out %u%s%s | mirrors (reflective glass) %u, of brush entities %u%s\n",
 
           g_world.map.c_str(), g_world.faces, g_world.displacements, g_world.skyFaces, g_world.triangles, resolved,
           g_world.materials.size(), g_world.groups.size(), meshes, g_world.skippedTranslucent, g_world.skippedIgnored, g_world.keptIgnored,
-          int(g_world.skyCamera), g_world.smoothNormals, g_world.props.size(), g_world.skyProps, g_world.propModels.size(),
+          int(g_world.skyCamera), g_world.smoothNormals, g_world.props.size(), g_world.skyProps, g_world.skyPropsByLeaf, g_world.propModels.size(),
           g_world.propModelsFailed, g_world.propParts, g_world.overlays, g_world.overlayTriangles,
           g_world.overlayGroups.size(), g_world.lodEntities, g_world.lodFaces, g_world.lodLeft, g_world.waterMaterials, g_world.surfaceNormalCount, g_world.surfaceNormalAnimated,
 
