@@ -1008,6 +1008,9 @@ struct SurfaceNormal {
 struct BrushModel {
   int32_t firstFace = 0, numFaces = 0;
   std::map<std::array<int32_t, 3>, Group> groups;
+  // Points just off its faces, both sides (model space): where an entity
+  // drawing it stands in the map's visibility (brushEntityUnseen).
+  std::vector<std::array<float, 3>> probes;
 };
 // An entity drawing a brush model: a scene instance per group mesh, moved
 // and shown or hidden as the engine draws the entity (placeBrushEntities).
@@ -1134,6 +1137,13 @@ struct World {
   // Since the last dump: instances added, moved or shown, hidden, removed;
   // runtime calls refused. Shown at the last frame.
   uint64_t brushAdded = 0, brushChanged = 0, brushHidden = 0, brushRemoved = 0, brushRefused = 0;
+  // Brush entities kept as they were while the camera cannot see where they
+  // stand (last placement), and the map's visibility they are told by: each
+  // leaf's cluster and the clusters' potentially visible sets (sendPartition).
+  uint32_t brushKeptUnseen = 0;
+  std::vector<int32_t> leafClusters;
+  std::vector<uint8_t> clusterRows;
+  uint32_t clusterCount = 0, clusterRowBytes = 0;
   uint32_t brushShown = 0;
   uint64_t sceneDrawnFrame = ~0ull; // the frame DrawSceneInstancesEXT last ran
 } g_world;
@@ -4575,6 +4585,10 @@ bool build(const Bsp &bsp) {
           centroid[k] += c[k] / float(corners.size());
       const float placed[3] = {centroid[0] + origin[0] + normal[0], centroid[1] + origin[1] + normal[1],
                                centroid[2] + origin[2] + normal[2]};
+      if (brush.probes.size() < 128)
+        for (float side : {4.0f, -4.0f})
+          brush.probes.push_back(
+              {centroid[0] + normal[0] * side, centroid[1] + normal[1] * side, centroid[2] + normal[2] * side});
       if (inSky(placed)) {
         usable = false;
         sky = true;
@@ -4703,6 +4717,10 @@ void sendPartition(const Bsp *bsp) {
   info.rowBytes = rowBytes;
   info.visibility = rows.data();
   g_partition = {uint32_t(nodeCount), uint32_t(leafCount), uint32_t(clusters), int(set(&info))};
+  g_world.leafClusters = std::move(leafClusters);
+  g_world.clusterRows = std::move(rows);
+  g_world.clusterCount = uint32_t(clusters);
+  g_world.clusterRowBytes = rowBytes;
 }
 
 std::wstring gameRoot() {
@@ -5418,12 +5436,58 @@ void unplaceBrushModel(int32_t model) {
     }
 }
 
+// The cluster of the map's visibility a point is in (-1: none: solid,
+// outside, or no partition).
+int clusterAt(const float p[3]) {
+  int index = 0;
+  for (int guard = 0; index >= 0 && guard < 4096; ++guard) {
+    if (size_t(index) >= g_world.nodes.size() || size_t(g_world.nodes[index].plane) >= g_world.planes.size())
+      return -1;
+    const auto &plane = g_world.planes[g_world.nodes[index].plane];
+    index = g_world.nodes[index].children[dot(plane.normal, p) - plane.dist >= 0 ? 0 : 1];
+  }
+  const int leaf = index < 0 ? -1 - index : -1;
+  return leaf >= 0 && size_t(leaf) < g_world.leafClusters.size() ? g_world.leafClusters[leaf] : -1;
+}
+
+// Whether the camera's cluster sees none of the clusters a placed brush
+// entity stands in: the engine draws no entity there, whatever its state.
+// False where that cannot be told (no partition, the camera outside the
+// map, the entity in no cluster).
+bool brushEntityUnseen(const BrushInstance &instance, int cameraCluster) {
+  if (cameraCluster < 0 || uint32_t(cameraCluster) >= g_world.clusterCount || !g_world.clusterRowBytes)
+    return false;
+  const auto model = g_world.brushModels.find(instance.model);
+  if (model == g_world.brushModels.end())
+    return false;
+  const uint8_t *row = &g_world.clusterRows[size_t(cameraCluster) * g_world.clusterRowBytes];
+  bool located = false;
+  for (const auto &probe : model->second.probes) {
+    float p[3];
+    for (int r = 0; r < 3; ++r)
+      p[r] = instance.transform[r][0] * probe[0] + instance.transform[r][1] * probe[1] +
+             instance.transform[r][2] * probe[2] + instance.transform[r][3];
+    const int cluster = clusterAt(p);
+    if (cluster < 0 || uint32_t(cluster) >= g_world.clusterCount)
+      continue;
+    located = true;
+    if (row[cluster >> 3] >> (cluster & 7) & 1)
+      return false;
+  }
+  return located;
+}
+
 // The brush entities the engine drew lately (takeBrushEntity), as scene
 // instances: added when an entity is first drawn, moved when it moves,
-// hidden when the engine has not drawn it for a few views (broken, removed,
-// out of the views' reach) and removed after a while. A model is taken
-// from the engine only once its meshes are built (BrushIndex ready).
-void placeBrushEntities() {
+// hidden when the engine has not drawn it for a few views (broken, removed)
+// and removed after a while. An entity the engine no longer draws because
+// the camera cannot see where it stands (the map's visibility) stays as it
+// was: it still shadows and lights what the camera does see (a window
+// across a hall from the room the player is in: d1_trainstation_02), and
+// when the camera sees its place again the engine's draws tell its state.
+// A model is taken from the engine only once its meshes are built
+// (BrushIndex ready).
+void placeBrushEntities(const float *eye) {
   if (g_world.brushModels.empty())
     return;
   static const auto add = sceneFunction<PFN_remixapi_AddSceneInstancesEXT>("remixapi_AddSceneInstancesEXT");
@@ -5473,7 +5537,8 @@ void placeBrushEntities() {
       changes.push_back(c);
     }
   };
-  uint32_t shown = 0;
+  uint32_t shown = 0, keptUnseen = 0;
+  const int cameraCluster = eye ? clusterAt(eye) : -1;
   for (const auto &[key, drawn] : seen) {
     const auto found = g_world.brushModels.find(drawn.model);
     if (found == g_world.brushModels.end())
@@ -5529,6 +5594,11 @@ void placeBrushEntities() {
       ++it;
       continue;
     }
+    if (instance.visible && brushEntityUnseen(instance, cameraCluster)) {
+      ++keptUnseen;
+      ++it;
+      continue;
+    }
     if (generation - instance.seen > kForget) {
       if (!instance.scene.empty()) {
         remove(instance.scene.data(), uint32_t(instance.scene.size()));
@@ -5546,7 +5616,8 @@ void placeBrushEntities() {
   }
   if (!changes.empty() && change(changes.data(), uint32_t(changes.size())) != REMIXAPI_ERROR_CODE_SUCCESS)
     ++g_world.brushRefused;
-  g_world.brushShown = shown;
+  g_world.brushShown = shown + keptUnseen;
+  g_world.brushKeptUnseen = keptUnseen;
 }
 
 void submit(MaterialLookup lookup, const float *eye) {
@@ -5689,7 +5760,7 @@ void submit(MaterialLookup lookup, const float *eye) {
   cutDetail(eye, detailChanged);
   // Brush entities are scene instances whatever happens to the map's below:
   // DrawSceneInstancesEXT runs once every frame while there are any.
-  placeBrushEntities();
+  placeBrushEntities(eye);
   struct SceneDrawn {
     uint64_t frame;
     ~SceneDrawn() {
@@ -6498,10 +6569,11 @@ void dumpStatistics(FILE *out) {
   fprintf(out,
           "   BSP brush entities (OPENREMIX_PROXY_BSP_BRUSH_ENTITIES): %zu models built (%u faces, %u triangles; "
           "translucent faces left to the engine %u) | models left to the engine: 3D skybox %u, displacement or water %u "
-          "| entities placed %zu, shown %u | engine draws taken %llu | instances added %llu, moved or shown %llu, "
+          "| entities placed %zu, shown %u (%u of them kept while the camera cannot see their place) | engine draws taken %llu | instances added %llu, moved or shown %llu, "
           "hidden %llu, removed %llu, refused %llu\n",
           g_world.brushModels.size(), g_world.brushFaces, g_world.brushTriangles, g_world.brushTranslucentFaces,
           g_world.brushLeftSky, g_world.brushLeftOther, g_world.brushInstances.size(), g_world.brushShown,
+          g_world.brushKeptUnseen,
           (unsigned long long)g_brushTaken.exchange(0), (unsigned long long)std::exchange(g_world.brushAdded, 0),
           (unsigned long long)std::exchange(g_world.brushChanged, 0),
           (unsigned long long)std::exchange(g_world.brushHidden, 0),
