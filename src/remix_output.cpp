@@ -128,6 +128,8 @@ struct Stats {
   std::atomic<uint32_t> cableDraws{0}, cableNoBase{0}, mirrorDraws{0};
   // Rope draws left out: the engine's solid pass under the rope (cableBackPass).
   std::atomic<uint32_t> cableBack{0};
+  // ParticleSphere draws: coloured by their vertices, not their normal map.
+  std::atomic<uint32_t> particleSphere{0};
   // Decals (onDraw): by kind (DecalKind order), by what marked them, and how
   // they were lifted off their receiver.
   std::atomic<uint32_t> decalKinds[5] = {};
@@ -4904,6 +4906,17 @@ bool submitParticles(const Draw &d, ParticleKind kind, uint64_t viewKey, const f
     inst.blend.textureAlphaOperation = 3;
     inst.blend.textureAlphaArg1Source = 1;
     inst.blend.textureAlphaArg2Source = 2;
+    // ParticleSphere (env_smokestack's particle/smokestack and its like): the
+    // shader samples the material's $bumpmap on sampler 0 (a normal map with
+    // the puff's opacity in alpha) and lights the particle's colour by it; its
+    // $basetexture is the DirectX 7 fallback. As albedo the normal map painted
+    // the smoke in its reds, greens and blues. Colour: the vertex colour
+    // alone; alpha: the map's times the vertex alpha, as above.
+    if (engine_materials::bound().known && nameStarts(engine_materials::bound().shader, "particlesphere")) {
+      inst.blend.textureColorOperation = 1; // select argument 1
+      inst.blend.textureColorArg1Source = 2;
+      ++g_stats.particleSphere;
+    }
     const bool nearest = isPointSampler(d.samplerStates, 0);
 #if defined(PROXY_GAME_EZ2)
     Shading shading;
@@ -10237,6 +10250,8 @@ void dumpStatistics(FILE *out) {
               g_stats.modulatedDraws.exchange(0) / f, g_stats.modulatedBlack.exchange(0) / f,
               g_stats.modulatedMasked.exchange(0) / f, g_stats.modulatedMetal.exchange(0) / f, m[0], m[1], m[2], m[3]);
     }
+  fprintf(out, "   ParticleSphere (smoke) draws per frame, coloured by their vertices: %.1f\n",
+          g_stats.particleSphere.exchange(0) / f);
   fprintf(out, "   cable (rope) back passes left out per frame: %.1f\n", g_stats.cableBack.exchange(0) / f);
   fprintf(out, "   cable (rope) draws per frame: base texture by name %.1f, not resolved (untextured) %.1f | reflective "
                "glass drawn as mirrors %.1f (OPENREMIX_PROXY_MIRRORS)\n",
