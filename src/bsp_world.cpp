@@ -4006,9 +4006,15 @@ bool build(const Bsp &bsp) {
     for (const auto &w : worldPlanes) {
       if (std::fabs(dot(w.normal, n)) < 0.996f || std::fabs(dot(w.normal, centroid) - w.dist) > tolerance)
         continue;
+      // Over the face itself: within its bounds along the plane (the
+      // tolerance is for the plane's own axis). A piece beside the face, its
+      // centre a few units past the face's edge, is not on it: dropped, it
+      // left a strip of nothing along the map's edge.
       bool over = true;
-      for (int k = 0; k < 3 && over; ++k)
-        over = centroid[k] >= w.mins[k] - tolerance && centroid[k] <= w.maxs[k] + tolerance;
+      for (int k = 0; k < 3 && over; ++k) {
+        const float slack = std::fabs(w.normal[k]) > 0.9f ? tolerance : 0;
+        over = centroid[k] >= w.mins[k] - slack && centroid[k] <= w.maxs[k] + slack;
+      }
       if (over)
         return true;
     }
@@ -4044,9 +4050,15 @@ bool build(const Bsp &bsp) {
       const float d = dot(w.normal, centroid) - w.dist;
       if (std::fabs(dot(w.normal, n)) < 0.996f || d >= 0.5f || d <= -kBehind)
         continue;
+      // Overlapping the face, by more than a unit along the plane: a piece
+      // that only touches the face's edge (the skybox's ground where the map's
+      // ground ends: gm_flatgrass) does not fight with it, and moved it left a
+      // step along the map's edge with nothing on its riser, the sky showing
+      // through from the skybox's side.
       bool overlap = true;
       for (int k = 0; k < 3 && overlap; ++k)
-        overlap = mins[k] <= w.maxs[k] + 1 && maxs[k] >= w.mins[k] - 1;
+        overlap = std::fabs(w.normal[k]) > 0.9f ? mins[k] <= w.maxs[k] + 1 && maxs[k] >= w.mins[k] - 1
+                                                : mins[k] < w.maxs[k] - 1 && maxs[k] > w.mins[k] + 1;
       if (!overlap)
         continue;
       const float shift = d + kBehind;
