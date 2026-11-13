@@ -34,6 +34,8 @@
 #include <map>
 #include <sstream>
 #include <unordered_map>
+#include <deque>
+#include <functional>
 #include <unordered_set>
 #include <vector>
 
@@ -781,6 +783,10 @@ struct Group {
   // skybox: 3D skybox geometry baked into world space (outside the map's
   // visibility partition). noCull: $nocull materials, seen from both sides.
   bool skybox = false, noCull = false;
+  // remixapi_InstanceInfoBackdropEXT role of its own (g_world.backdrop): 2
+  // the 3D skybox's pieces inside the map's space, 3 the map's sky faces
+  // (portals). 0: none of its own (3D skybox geometry is role 1).
+  uint8_t backdrop = 0;
   uint8_t alphaRef = 0;
   uint32_t categories = 0;
   uint64_t id = 0;
@@ -1070,6 +1076,12 @@ struct World {
   float playableMins[3] = {}, playableMaxs[3] = {};
   float skyReach = 0; // farthest traced sky point from the playable bounds' centre
   uint32_t skyPiecesBehind = 0;
+  // The 3D skybox as a backdrop (remixapi_InstanceInfoBackdropEXT, where the
+  // runtime has it; OPENREMIX_PROXY_SKY_BACKDROP=0 keeps it off): the map's
+  // sky faces are portals onto it, and its pieces inside the map's space are
+  // kept, seen past a portal only, where they were cut away.
+  bool backdrop = false;
+  uint32_t skyPortalFaces = 0, skyBehindPieces = 0;
   uint32_t skyTracedTriangles = 0, skyStandInTriangles = 0, skyClippedTriangles = 0, skyTracedProps = 0,
            skyStandInProps = 0, skyCoplanarPieces = 0;
   uint64_t frames = 0;
@@ -2516,7 +2528,8 @@ bool insidePlayable(const Bsp &bsp, const float p[3]) {
 // drop, so an untouched polygon can keep its original vertices.
 struct SkyClipResult { bool split = false, removed = false; };
 void clipOutsidePlayable(const Bsp &bsp, int index, std::vector<remixapi_HardcodedVertex> polygon,
-                         std::vector<std::vector<remixapi_HardcodedVertex>> &out, SkyClipResult &result, int depth = 0) {
+                         std::vector<std::vector<remixapi_HardcodedVertex>> &out, SkyClipResult &result, int depth = 0,
+                         std::vector<std::vector<remixapi_HardcodedVertex>> *inside = nullptr) {
   const auto [nodes, nodeCount] = bsp.lump<Node>(kNodes);
   const auto [planes, planeCount] = bsp.lump<Plane>(kPlanes);
   if (polygon.size() < 3)
@@ -2525,6 +2538,8 @@ void clipOutsidePlayable(const Bsp &bsp, int index, std::vector<remixapi_Hardcod
     const int leaf = -1 - index;
     if (size_t(leaf) < g_world.leafPlayable.size() && g_world.leafPlayable[leaf]) {
       result.split = result.removed = true;
+      if (inside)
+        inside->push_back(std::move(polygon));
       return;
     }
     out.push_back(std::move(polygon));
@@ -2544,9 +2559,9 @@ void clipOutsidePlayable(const Bsp &bsp, int index, std::vector<remixapi_Hardcod
     back |= d[i] < -kEpsilon;
   }
   if (!back) // on the plane counts as in front, as leafAt does
-    return clipOutsidePlayable(bsp, nodes[index].children[0], std::move(polygon), out, result, depth + 1);
+    return clipOutsidePlayable(bsp, nodes[index].children[0], std::move(polygon), out, result, depth + 1, inside);
   if (!front)
-    return clipOutsidePlayable(bsp, nodes[index].children[1], std::move(polygon), out, result, depth + 1);
+    return clipOutsidePlayable(bsp, nodes[index].children[1], std::move(polygon), out, result, depth + 1, inside);
   result.split = true;
   auto lerp = [](const remixapi_HardcodedVertex &a, const remixapi_HardcodedVertex &b, float t) {
     remixapi_HardcodedVertex v = a;
@@ -2580,8 +2595,8 @@ void clipOutsidePlayable(const Bsp &bsp, int index, std::vector<remixapi_Hardcod
       backPart.push_back(v);
     }
   }
-  clipOutsidePlayable(bsp, nodes[index].children[0], std::move(frontPart), out, result, depth + 1);
-  clipOutsidePlayable(bsp, nodes[index].children[1], std::move(backPart), out, result, depth + 1);
+  clipOutsidePlayable(bsp, nodes[index].children[0], std::move(frontPart), out, result, depth + 1, inside);
+  clipOutsidePlayable(bsp, nodes[index].children[1], std::move(backPart), out, result, depth + 1, inside);
 }
 
 void noteSkyReach(const float p[3]) {
@@ -3808,6 +3823,12 @@ bool build(const Bsp &bsp) {
   g_world.skyArea = skyArea;
   g_world.skyTraced = skyArea >= 0 && skyTraceEnabled() && g_world.skyScale > 0;
   {
+    char v[8] = {};
+    g_world.backdrop =
+        !(GetEnvironmentVariableA("OPENREMIX_PROXY_SKY_BACKDROP", v, sizeof(v)) && v[0] == '0') &&
+        sceneFunction<PFN_remixapi_InstanceBackdropSupportedEXT>("remixapi_InstanceBackdropSupportedEXT") != nullptr;
+  }
+  {
     // Bake bounds are needed on every map, including maps without a 3D skybox
     // and runs with sky tracing disabled. Keep the separate sky area excluded.
     bool any = false;
@@ -3822,6 +3843,7 @@ bool build(const Bsp &bsp) {
       any = true;
     }
     g_world.skyTraced &= any;
+    g_world.backdrop &= g_world.skyTraced;
   }
   {
     const auto [nodes, nodeCount] = bsp.lump<Node>(kNodes);
@@ -3893,22 +3915,32 @@ bool build(const Bsp &bsp) {
   // skybox: a face of the 3D skybox baked into world space. Such faces and
   // $nocull materials get groups of their own (the camera's culling is per
   // instance); the other groups keep the keys, and so the ids, they had.
-  auto groupFor = [&](const float centroid[3], bool sky, int materialIndex, bool skybox) -> Geometry & {
+  // role: a group of its own for a backdrop role (Group::backdrop).
+  // behindOf: a 3D skybox geometry's counterpart for its pieces inside the
+  // map's space (role 2), where the backdrop is on.
+  std::unordered_map<const Geometry *, Geometry *> behindOf;
+  std::function<Geometry &(const float *, bool, int, bool, int)> groupFor =
+      [&](const float *centroid, bool sky, int materialIndex, bool skybox, int role) -> Geometry & {
     const auto &m = g_world.materials[materialIndex];
     std::array<int32_t, 6> key = {int32_t(std::floor(centroid[0] / kCell)), int32_t(std::floor(centroid[1] / kCell)),
-                                  int32_t(std::floor(centroid[2] / kCell)), int32_t(sky) | (skybox ? 2 : 0) | (m.noCull ? 4 : 0),
+                                  int32_t(std::floor(centroid[2] / kCell)),
+                                  int32_t(sky) | (skybox ? 2 : 0) | (m.noCull ? 4 : 0) | role << 3,
                                   m.alphaTest ? m.alphaRef + 1 : 0, int32_t(m.categories)};
     auto &group = g_world.groups[key];
     if (!group.id) {
       group.sky = sky;
       group.skybox = skybox;
+      group.backdrop = uint8_t(role);
       group.noCull = m.noCull;
       group.alphaTest = m.alphaTest;
       group.alphaRef = m.alphaRef;
       group.categories = m.categories;
       group.id = XXH3_64bits_withSeed(key.data(), sizeof(key), 0x6273707764ull) | 1;
     }
-    return group.surfaces[uint32_t(materialIndex)];
+    Geometry &geometry = group.surfaces[uint32_t(materialIndex)];
+    if (skybox && !role && g_world.backdrop)
+      behindOf[&geometry] = &groupFor(centroid, sky, materialIndex, true, 2);
+    return geometry;
   };
   auto vertex = [&](const float p[3], const float n[3], const TexInfo &ti, const TexData &td) {
     remixapi_HardcodedVertex v = {};
@@ -4046,9 +4078,13 @@ bool build(const Bsp &bsp) {
         size_t(face.plane) >= planeCount)
       continue;
     const TexInfo &ti = texInfos[face.texInfo];
-    if (ti.flags & (kSurfSky2D | kSurfSky | kSurfNoDraw | kSurfHint | kSurfSkip))
+    // A sky face of the map (a sky brush's, not the 3D skybox room's own): a
+    // portal onto the backdrop, where that is on.
+    const bool portalFace = g_world.backdrop && !lodFace && face.dispInfo < 0 && (ti.flags & kSurfSky) &&
+                            !(ti.flags & (kSurfNoDraw | kSurfHint | kSurfSkip));
+    if ((ti.flags & (kSurfSky2D | kSurfSky | kSurfNoDraw | kSurfHint | kSurfSkip)) && !portalFace)
       continue;
-    if (ti.flags & kSurfTrans) {
+    if ((ti.flags & kSurfTrans) && !portalFace) {
       ++g_world.skippedTranslucent;
       continue;
     }
@@ -4115,6 +4151,22 @@ bool build(const Bsp &bsp) {
     // The 3D skybox: path traced in world space, or left to the engine's
     // sky view (l4d2-rtx keeps its draws).
     const bool skyboxFace = skyFace[size_t(f)] != 0 || inSky(probe) || (face.dispInfo >= 0 && inSky(behind));
+    if (portalFace) {
+      if (skyboxFace)
+        continue;
+      Geometry &g = groupFor(centroid, false, m, false, 3);
+      const uint32_t base = uint32_t(g.vertices.size());
+      for (const auto &corner : corners)
+        g.vertices.push_back(vertex(corner.data(), normal, ti, td));
+      for (uint32_t k = 1; k + 1 < corners.size(); ++k) {
+        if (reversed)
+          g.indices.insert(g.indices.end(), {base, base + k + 1, base + k});
+        else
+          g.indices.insert(g.indices.end(), {base, base + k, base + k + 1});
+      }
+      ++g_world.skyPortalFaces;
+      continue;
+    }
     if (skyboxFace) {
       ++g_world.skyFaces;
       if (!g_world.skyTraced)
@@ -4141,13 +4193,27 @@ bool build(const Bsp &bsp) {
       // away along the map's BSP planes.
       const std::vector<uint32_t> triangles(g.indices.begin() + firstIndex, g.indices.end());
       g.indices.resize(firstIndex);
-      std::vector<std::vector<remixapi_HardcodedVertex>> pieces;
+      // With the backdrop, the pieces inside the map's space are kept in the
+      // geometry's counterpart (behindOf): seen past a sky face only.
+      const auto counterpart = behindOf.find(&g);
+      Geometry *const behindGeometry = counterpart != behindOf.end() ? counterpart->second : nullptr;
+      std::vector<std::vector<remixapi_HardcodedVertex>> pieces, insidePieces;
       for (size_t i = 0; i + 2 < triangles.size(); i += 3) {
         pieces.clear();
+        insidePieces.clear();
         SkyClipResult clipped;
         clipOutsidePlayable(bsp, 0,
                             {g.vertices[triangles[i]], g.vertices[triangles[i + 1]], g.vertices[triangles[i + 2]]},
-                            pieces, clipped);
+                            pieces, clipped, 0, behindGeometry ? &insidePieces : nullptr);
+        for (const auto &piece : insidePieces) {
+          if (piece.size() < 3)
+            continue;
+          const uint32_t first = uint32_t(behindGeometry->vertices.size());
+          behindGeometry->vertices.insert(behindGeometry->vertices.end(), piece.begin(), piece.end());
+          for (uint32_t k = 1; k + 1 < piece.size(); ++k)
+            behindGeometry->indices.insert(behindGeometry->indices.end(), {first, first + k, first + k + 1});
+          g_world.skyBehindPieces += count;
+        }
         pieces.erase(std::remove_if(pieces.begin(), pieces.end(),
                                     [&](const auto &piece) {
                                       const bool coplanar = onWorldFace(piece);
@@ -4325,7 +4391,7 @@ bool build(const Bsp &bsp) {
       if (layer.material < 0 || (!anyAlpha && !layer.masked)) {
         if (twoLayers)
           ++(layer.material < 0 ? g_world.layers.withoutTexture : g_world.layers.flat);
-        emit(groupFor(centroid, sky, m, skyboxFace), triangles, false);
+        emit(groupFor(centroid, sky, m, skyboxFace, 0), triangles, false);
       } else {
         blend.resize(alpha.size());
         const float low = std::clamp(layer.centre - layer.halfWidth, 0.0f, 1.0f),
@@ -4354,10 +4420,10 @@ bool build(const Bsp &bsp) {
         // triangles. A surface without any makes the runtime reject the whole
         // mesh of the group, and with it the first layer under the sheets.)
         if (!first.empty())
-          emit(groupFor(centroid, sky, m, skyboxFace), first, false);
+          emit(groupFor(centroid, sky, m, skyboxFace, 0), first, false);
         const float (*layerUv)[3] = layer.uvTransformed ? layer.uv : nullptr;
         if (!second.empty())
-          emit(groupFor(centroid, sky, layer.material, skyboxFace), second, false, layerUv);
+          emit(groupFor(centroid, sky, layer.material, skyboxFace, 0), second, false, layerUv);
         if (!mixed.empty()) {
           const bool noCull = g_world.materials[m].noCull;
           std::array<int32_t, 5> key = {int32_t(std::floor(centroid[0] / kCell)), int32_t(std::floor(centroid[1] / kCell)),
@@ -4384,7 +4450,7 @@ bool build(const Bsp &bsp) {
       ++g_world.waterDownFaces;
     } else if (face.dispInfo < 0) {
       g_world.layers.brushFaces += secondLayer(m, false).present;
-      Geometry &g = groupFor(centroid, sky, m, skyboxFace);
+      Geometry &g = groupFor(centroid, sky, m, skyboxFace, 0);
       const uint32_t base = uint32_t(g.vertices.size());
       const size_t firstIndex = g.indices.size();
       for (size_t e = 0; e < corners.size(); ++e) {
@@ -5713,8 +5779,19 @@ void submit(MaterialLookup lookup, const float *eye) {
   auto &cullStats = g_world.cull;
   cullStats.backFaces = cullStats.visibility = cullStats.twoSided = cullStats.skybox = cullStats.instances = 0;
   // Chains the camera culling of an instance in front of info.pNext.
+  // And the backdrop role of 3D skybox geometry (1) or the group's own
+  // (Group::backdrop), where the backdrop is on.
+  std::deque<remixapi_InstanceInfoBackdropEXT> backdropRoles;
   auto cameraCulling = [&](remixapi_InstanceInfo &info, remixapi_InstanceInfoCameraCullingEXT &culling, bool noCull,
-                           bool skybox) {
+                           bool skybox, uint8_t role = 0) {
+    if (g_world.backdrop && (role || skybox)) {
+      auto &backdrop = backdropRoles.emplace_back();
+      backdrop = {};
+      backdrop.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BACKDROP_EXT;
+      backdrop.role = role ? role : uint32_t(REMIXAPI_INSTANCE_BACKDROP_GEOMETRY_EXT);
+      backdrop.pNext = info.pNext;
+      info.pNext = &backdrop;
+    }
     culling = {};
     culling.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_CAMERA_CULLING_EXT;
     culling.flags = cullEnabled & ~((noCull ? uint32_t(REMIXAPI_INSTANCE_CAMERA_CULL_BACK_FACES_EXT) : 0u) |
@@ -5822,7 +5899,7 @@ void submit(MaterialLookup lookup, const float *eye) {
     info.transform.matrix[0][0] = info.transform.matrix[1][1] = info.transform.matrix[2][2] = 1;
     info.doubleSided = 1;
     remixapi_InstanceInfoCameraCullingEXT culling;
-    cameraCulling(info, culling, group.noCull, group.skybox);
+    cameraCulling(info, culling, group.noCull, group.skybox, group.backdrop);
     const auto retained = draw(info);
     captureCharts(retained, group);
   }
@@ -6110,7 +6187,8 @@ const Occluders &occluders() {
   };
   static_assert(sizeof(remixapi_HardcodedVertex) % sizeof(float) == 0);
   for (const auto &[key, group] : g_world.groups) {
-    if (group.sky)
+    // (Backdrop portals and the skybox's pieces behind them block no light.)
+    if (group.sky || group.backdrop >= 2)
       continue;
     for (const auto &[material, geometry] : group.surfaces)
       if (opaque(int(material)))
@@ -6336,10 +6414,11 @@ void dumpStatistics(FILE *out) {
   }
   if (g_world.skyTraced)
     fprintf(out, "   3D skybox path traced: %u triangles, %u clipped at the map, %u props (in playable space: %u "
-            "triangles, %u props; pieces on world faces %u, moved behind world faces %u), %zu clipped prop models, reach %.0f\n",
+            "triangles, %u props; pieces on world faces %u, moved behind world faces %u), %zu clipped prop models, reach %.0f | backdrop %s: %u sky faces as portals, %u pieces inside the map kept behind them\n",
             g_world.skyTracedTriangles, g_world.skyClippedTriangles, g_world.skyTracedProps,
             g_world.skyStandInTriangles, g_world.skyStandInProps, g_world.skyCoplanarPieces,
-            g_world.skyPiecesBehind, g_world.clippedSkyModels.size(), g_world.skyReach);
+            g_world.skyPiecesBehind, g_world.clippedSkyModels.size(), g_world.skyReach,
+            g_world.backdrop ? "on" : "off", g_world.skyPortalFaces, g_world.skyBehindPieces);
   {
     // Unresolved materials: no predictable texture hash (VTF missing or its
     // format not modelled) vs. a hash the engine never uploaded.
