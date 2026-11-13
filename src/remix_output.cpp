@@ -4326,8 +4326,9 @@ std::atomic<uint32_t> g_usParticles{0};
 // Much that glows has a light already, or is too slight for one, and is told
 // by how it behaves:
 //   weak      what it sends is under kParticleLightPower (sparks, tracers);
-//   young     it has glowed for less than kParticleLightAge milliseconds (a
-//             muzzle flash, an explosion: the engine's dlights light those);
+//   young     it comes up over its first kParticleLightAge milliseconds (a
+//             muzzle flash of a frame or two sends next to nothing; the
+//             engine's dlights light those);
 //   lit       a light of the map or the engine stands within its reach (the
 //             glow sprite of a lamp, a fire the mapper put a light by).
 // OPENREMIX_PROXY_PARTICLE_LIGHTS=0 turns them off; _PARTICLE_LIGHT_SCALE
@@ -4342,7 +4343,7 @@ struct ParticleLightSum {
 // This frame's, by cell (render thread; taken at present).
 std::unordered_map<uint64_t, ParticleLightSum> g_particleLightSums;
 constexpr float kParticleLightPower = 150;
-constexpr uint64_t kParticleLightAge = 250;
+constexpr uint64_t kParticleLightAge = 120;
 struct ParticleLightState {
   float power[3] = {}, position[3] = {}, radius = 8;
   uint64_t lastFrame = 0;
@@ -8998,10 +8999,15 @@ void onPresent() {
           ++g_stats.particleLightWeak;
           continue;
         }
-        if (now - light.since < kParticleLightAge) {
+        // Young: it comes up over kParticleLightAge (squared: little at
+        // first), so a flash of a frame or two sends next to nothing and a
+        // fire is lit at once.
+        const float age = std::min(float(now - light.since) / float(kParticleLightAge), 1.f);
+        const float grown = age * age;
+        if (grown < 1)
           ++g_stats.particleLightYoung;
+        if (!(grown > .01f))
           continue;
-        }
         const float reach = std::max(2 * light.radius, 48.f);
         bool lit = false;
         for (const auto &[otherHash, other] : g_frameLights) {
@@ -9031,7 +9037,7 @@ void onPresent() {
         // from this one's.
         const float resize = (params.radius / light.radius) * (params.radius / light.radius);
         for (float &c : params.radiance)
-          c *= resize;
+          c *= resize * grown;
         params.radius = light.radius;
         made.emplace_back(key ^ 0x5041525449434c45ull, l);
         madeParams.push_back(params);
@@ -10567,7 +10573,7 @@ void dumpStatistics(FILE *out) {
               g_stats.modulatedDraws.exchange(0) / f, g_stats.modulatedBlack.exchange(0) / f,
               g_stats.modulatedMasked.exchange(0) / f, g_stats.modulatedMetal.exchange(0) / f, m[0], m[1], m[2], m[3]);
     }
-  fprintf(out, "   particle lights per frame: %.1f, from %.1f self-lit draws | none made of: weak %.1f, young %.1f, "
+  fprintf(out, "   particle lights per frame: %.1f, from %.1f self-lit draws | none made of: weak %.1f (still coming up %.1f), "
                "a light beside them %.1f (OPENREMIX_PROXY_PARTICLE_LIGHTS)\n",
           g_stats.particleLights.exchange(0) / f, g_stats.particleLightDraws.exchange(0) / f,
           g_stats.particleLightWeak.exchange(0) / f, g_stats.particleLightYoung.exchange(0) / f,
