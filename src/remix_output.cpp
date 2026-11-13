@@ -126,6 +126,8 @@ struct Stats {
   std::atomic<uint32_t> eyes{0}, eyeIrises{0}, eyeRefracts{0}, eyesByShader{0};
   // Rope draws (the Cable shader): with their base texture found by name, and without.
   std::atomic<uint32_t> cableDraws{0}, cableNoBase{0}, mirrorDraws{0};
+  // Rope draws left out: the engine's solid pass under the rope (cableBackPass).
+  std::atomic<uint32_t> cableBack{0};
   // Decals (onDraw): by kind (DecalKind order), by what marked them, and how
   // they were lifted off their receiver.
   std::atomic<uint32_t> decalKinds[5] = {};
@@ -4293,6 +4295,18 @@ std::atomic<uint32_t> g_usParticles{0};
 
 #if defined(PROXY_GAME_EZ2)
 #else
+// The engine draws a rope twice (C_RopeKeyframe, CRopeManager): a pass with
+// the material named after the rope's with "_back" (cable/cable_back: the
+// soft-edged cable/dx8cable texture, the rope's antialiased fringe), and the
+// rope's own (cable/cable: cable/black). Both are the same ribbon in the same
+// place: traced, a ray met one or the other from frame to frame, and the rope
+// flickered between the fringe's texture and its own black. The back pass is
+// left out.
+bool cableBackPass() {
+  const char *name = engine_materials::currentName();
+  const size_t length = name ? std::strlen(name) : 0;
+  return length >= 5 && _stricmp(name + length - 5, "_back") == 0;
+}
 bool nameStarts(const char *name, const char *prefix) { return _strnicmp(name, prefix, std::strlen(prefix)) == 0; }
 #endif
 
@@ -7062,6 +7076,10 @@ void onDraw(const Draw &d) {
       return;
     }
   } else if (bound.known && nameStarts(bound.shader, "cable")) {
+    if (cableBackPass()) {
+      ++g_stats.cableBack;
+      return;
+    }
     inst.material = materialForName(engine_materials::current().base, nearest);
     ++(inst.material ? g_stats.cableDraws : g_stats.cableNoBase);
   } else {
@@ -7079,6 +7097,10 @@ void onDraw(const Draw &d) {
     }
 #else
   if (bound.known && nameStarts(bound.shader, "cable")) {
+    if (cableBackPass()) {
+      ++g_stats.cableBack;
+      return;
+    }
     inst.material = materialForName(engine_materials::current().base, nearest);
     ++(inst.material ? g_stats.cableDraws : g_stats.cableNoBase);
   } else {
@@ -10215,6 +10237,7 @@ void dumpStatistics(FILE *out) {
               g_stats.modulatedDraws.exchange(0) / f, g_stats.modulatedBlack.exchange(0) / f,
               g_stats.modulatedMasked.exchange(0) / f, g_stats.modulatedMetal.exchange(0) / f, m[0], m[1], m[2], m[3]);
     }
+  fprintf(out, "   cable (rope) back passes left out per frame: %.1f\n", g_stats.cableBack.exchange(0) / f);
   fprintf(out, "   cable (rope) draws per frame: base texture by name %.1f, not resolved (untextured) %.1f | reflective "
                "glass drawn as mirrors %.1f (OPENREMIX_PROXY_MIRRORS)\n",
           g_stats.cableDraws.exchange(0) / f, g_stats.cableNoBase.exchange(0) / f, g_stats.mirrorDraws.exchange(0) / f);
