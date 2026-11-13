@@ -133,6 +133,8 @@ struct Stats {
   // Particle draws lit by the traced scene (REMIXAPI_SPRITE_LIT_EXT), and
   // those left unlit because they glow by themselves (glowingParticle).
   std::atomic<uint32_t> particleLit{0}, particleGlowing{0};
+  // Particle draws that light the scene, and the lights made of them.
+  std::atomic<uint32_t> particleLightDraws{0}, particleLights{0};
   // Decals (onDraw): by kind (DecalKind order), by what marked them, and how
   // they were lifted off their receiver.
   std::atomic<uint32_t> decalKinds[5] = {};
@@ -4307,6 +4309,122 @@ std::atomic<uint32_t> g_usParticles{0};
 // place: traced, a ray met one or the other from frame to frame, and the rope
 // flickered between the fringe's texture and its own black. The back pass is
 // left out.
+// Particle lights. Fire drawn as particles (env_fire, burning props and
+// characters, flames of the particle system) is light in Source only where a
+// map or the game puts a light beside it; traced, a fire in a dark room lit
+// nothing. A particle draw whose material's name says it burns
+// (lightingParticle) gives the scene lights: its quads are gathered by where
+// they are (cells of kParticleLightCell units), and each cell's become one
+// sphere light at their centre, of their size, sending what they show: the
+// sum over the quads of colour x coverage x area, over pi and the distance
+// squared, as Source's lighting has a point light (a surface a diffuse white
+// under lighting 1 shows as the sprite's colour 1 does). Smoothed over a few
+// frames (flames flicker by the frame) and kept a moment after the last
+// draw. Explosions, muzzle flashes and the glow sprites of lamps have lights
+// of their own (dlights, the map's): not these.
+// OPENREMIX_PROXY_PARTICLE_LIGHTS=0 turns them off; _PARTICLE_LIGHT_SCALE
+// scales them; _PARTICLE_LIGHT_NAMES adds name parts, ';'-separated.
+constexpr float kParticleLightCell = 160;
+constexpr uint32_t kParticleLightLimit = 24;
+struct ParticleLightSum {
+  double power[3] = {}, position[3] = {}, weight = 0, area = 0;
+};
+// This frame's, by cell (render thread; taken at present).
+std::unordered_map<uint64_t, ParticleLightSum> g_particleLightSums;
+struct ParticleLightState {
+  float power[3] = {}, position[3] = {}, radius = 8;
+  uint64_t lastFrame = 0;
+};
+std::unordered_map<uint64_t, ParticleLightState> g_particleLights;
+bool particleLightsEnabled() {
+  static const bool enabled = [] {
+    char v[8] = {};
+    return !(GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLE_LIGHTS", v, sizeof(v)) && v[0] == '0');
+  }();
+  return enabled;
+}
+bool lightingParticle(const char *material) {
+  static const std::vector<std::string> parts = [] {
+    std::vector<std::string> out = {"fire", "flame", "burn", "ember", "lava", "molten"};
+    char extra[1024] = {};
+    if (GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLE_LIGHT_NAMES", extra, sizeof(extra))) {
+      std::string list = extra;
+      for (size_t at = 0; at <= list.size();) {
+        const size_t end = std::min(list.find(';', at), list.size());
+        std::string part = list.substr(at, end - at);
+        for (char &c : part)
+          c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (!part.empty())
+          out.push_back(part);
+        at = end + 1;
+      }
+    }
+    return out;
+  }();
+  if (!material)
+    return false;
+  std::string name = material;
+  for (char &c : name)
+    c = char(std::tolower(static_cast<unsigned char>(c)));
+  // (Smoke that a fire's system draws with it is no light.)
+  if (name.find("smoke") != std::string::npos)
+    return false;
+  for (const auto &part : parts)
+    if (name.find(part) != std::string::npos)
+      return true;
+  return false;
+}
+// Adds a particle draw's quads to the frame's sums. `texture`: the base
+// texture's mean colour (linear) times its coverage; `gain`: what the stored
+// colours were divided by; `toWorld`: the vertices' space to world, or null.
+void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, const std::vector<uint32_t> &indices,
+                         const float texture[3], float gain, const float (*toWorld)[4]) {
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    float p[3][3], colour[3] = {}, alpha = 0;
+    bool valid = true;
+    for (int c = 0; c < 3 && valid; ++c) {
+      if (indices[i + c] >= vertices.size()) {
+        valid = false;
+        break;
+      }
+      const auto &v = vertices[indices[i + c]];
+      for (int r = 0; r < 3; ++r)
+        p[c][r] = toWorld ? toWorld[r][0] * v.position[0] + toWorld[r][1] * v.position[1] +
+                                toWorld[r][2] * v.position[2] + toWorld[r][3]
+                          : v.position[r];
+      // D3DCOLOR: B, G, R, A in memory; sRGB-encoded rgb.
+      colour[0] += std::pow(float((v.color >> 16) & 255) / 255, 2.2f) / 3;
+      colour[1] += std::pow(float((v.color >> 8) & 255) / 255, 2.2f) / 3;
+      colour[2] += std::pow(float(v.color & 255) / 255, 2.2f) / 3;
+      alpha += float(v.color >> 24) / 255 / 3;
+    }
+    if (!valid)
+      continue;
+    const float e1[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
+    const float e2[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+    const float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+    const float area = .5f * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (!(area > 0) || !std::isfinite(area))
+      continue;
+    const float centre[3] = {(p[0][0] + p[1][0] + p[2][0]) / 3, (p[0][1] + p[1][1] + p[2][1]) / 3,
+                             (p[0][2] + p[1][2] + p[2][2]) / 3};
+    const int32_t cell[3] = {int32_t(std::floor(centre[0] / kParticleLightCell)),
+                             int32_t(std::floor(centre[1] / kParticleLightCell)),
+                             int32_t(std::floor(centre[2] / kParticleLightCell))};
+    auto &sum = g_particleLightSums[fnv(cell, sizeof(cell), 0x70617274696c6974ull) | 1];
+    double weight = 0;
+    for (int k = 0; k < 3; ++k) {
+      const double power = double(colour[k]) * gain * alpha * texture[k] * area;
+      sum.power[k] += power;
+      weight += power;
+    }
+    for (int k = 0; k < 3; ++k)
+      sum.position[k] += centre[k] * weight;
+    sum.weight += weight;
+    sum.area += area;
+  }
+}
+
 // A particle material that glows by itself, told by its name: fire and what
 // goes with it, sparks, flashes, beams. Lower case parts of the material's
 // path; OPENREMIX_PROXY_PARTICLES_UNLIT adds more, ';'-separated.
@@ -5011,6 +5129,20 @@ bool submitParticles(const Draw &d, ParticleKind kind, uint64_t viewKey, const f
       return !(GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLES_LIT", v, sizeof(v)) && v[0] == '0') &&
              GetProcAddress(game::runtimeModule(), "remixapi_SpriteLitSupportedEXT") != nullptr;
     }();
+    // Fire lights the scene (see Particle lights above).
+    if (particleLightsEnabled() && inst.rasterOnly && !multiplies && result.anyColor &&
+        lightingParticle(engine_materials::currentName())) {
+      float mean[4] = {1, 1, 1, 1}, texture[3];
+      const std::string &base = engine_materials::current().base;
+      if (base.empty() || !bsp::textureMeanColor(base, mean))
+        mean[0] = mean[1] = mean[2] = .5f, mean[3] = .5f;
+      // An additive sprite adds its colour whatever its alpha; a blended one
+      // shows it by its coverage.
+      for (int k = 0; k < 3; ++k)
+        texture[k] = std::pow(std::max(mean[k], 0.f), 2.2f) * (additive ? 1.f : mean[3]);
+      gatherParticleLight(vertices, indices, texture, float(result.gain), cameraToWorld);
+      ++g_stats.particleLightDraws;
+    }
     // Not what glows by itself though it blends as smoke does: fire, flames
     // and embers (dim in a dark room, lit), by what the material says
     // ($addself, $overbrightfactor above 1: premultiplied or gained above)
@@ -8792,6 +8924,71 @@ void onPresent() {
           addDefined(e.hash, l);
         }
     engine_lights::report(styled, styledOff, duplicates);
+    // Particle lights: this frame's sums into the lights kept (smoothed),
+    // the strongest first where there are more than the limit.
+    if (particleLightsEnabled()) {
+      static const float particleScale = envScale("OPENREMIX_PROXY_PARTICLE_LIGHT_SCALE", 6.0f);
+      static const float lightScale = envScale("OPENREMIX_PROXY_LIGHT_SCALE", 1.0f);
+      static const float sunScale = envScale("OPENREMIX_PROXY_SUN_SCALE", 1.0f);
+      constexpr float kBlend = .25f; // a flame's flicker over about four frames
+      for (auto &[key, sum] : g_particleLightSums) {
+        if (!(sum.weight > 0))
+          continue;
+        auto &light = g_particleLights[key];
+        const bool fresh = light.lastFrame == 0 || g_frame - light.lastFrame > 30;
+        const float blend = fresh ? 1.f : kBlend;
+        for (int k = 0; k < 3; ++k) {
+          light.power[k] += (float(sum.power[k]) - light.power[k]) * blend;
+          light.position[k] += (float(sum.position[k] / sum.weight) - light.position[k]) * blend;
+        }
+        // The quads' size as a sphere's radius (they overlap: a part of it).
+        const float radius = std::clamp(.25f * std::sqrt(float(sum.area)), 2.f, 48.f);
+        light.radius += (radius - light.radius) * blend;
+        light.lastFrame = g_frame;
+      }
+      g_particleLightSums.clear();
+      std::vector<std::pair<float, uint64_t>> order;
+      for (auto it = g_particleLights.begin(); it != g_particleLights.end();) {
+        auto &light = it->second;
+        if (light.lastFrame != g_frame) {
+          // No longer drawn: it dies down over a few frames.
+          for (float &c : light.power)
+            c *= 1 - kBlend;
+          if (g_frame - light.lastFrame > 12) {
+            it = g_particleLights.erase(it);
+            continue;
+          }
+        }
+        order.emplace_back(light.power[0] + light.power[1] + light.power[2], it->first);
+        ++it;
+      }
+      std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+      if (order.size() > kParticleLightLimit)
+        order.resize(kParticleLightLimit);
+      for (const auto &[power, key] : order) {
+        const auto &light = g_particleLights[key];
+        SourceLight l = {};
+        l.type = 1;
+        l.attenuation2 = 1; // colour / distance squared
+        std::memcpy(l.position, light.position, sizeof(l.position));
+        for (int k = 0; k < 3; ++k)
+          l.color[k] = light.power[k] * particleScale / 3.14159265f;
+        lighting::LightParams params;
+        if (!(power > 0) || !lighting::describeLight(l, params, lightScale, sunScale))
+          continue;
+        // describeLight's radiance is for its own radius: the same intensity
+        // from this one's.
+        const float resize = (params.radius / light.radius) * (params.radius / light.radius);
+        for (float &c : params.radiance)
+          c *= resize;
+        params.radius = light.radius;
+        const uint64_t hash = key ^ 0x5041525449434c45ull;
+        g_frameLights[hash] = l;
+        g_frameEdits[hash] = params;
+        g_lightDefinitions[hash] = (fnv(&l, sizeof(l)) ^ fnv(&params, sizeof(params))) | 1;
+        ++g_stats.particleLights;
+      }
+    }
     for (auto &[hash, l] : g_frameLights) {
       auto &cached = g_lights[hash];
       const auto defined = g_lightDefinitions.find(hash);
@@ -10311,6 +10508,8 @@ void dumpStatistics(FILE *out) {
               g_stats.modulatedDraws.exchange(0) / f, g_stats.modulatedBlack.exchange(0) / f,
               g_stats.modulatedMasked.exchange(0) / f, g_stats.modulatedMetal.exchange(0) / f, m[0], m[1], m[2], m[3]);
     }
+  fprintf(out, "   particle lights per frame: %.1f, from %.1f draws of burning materials (OPENREMIX_PROXY_PARTICLE_LIGHTS)\n",
+          g_stats.particleLights.exchange(0) / f, g_stats.particleLightDraws.exchange(0) / f);
   fprintf(out, "   alpha-blended particle draws per frame lit by the traced scene: %.1f\n",
           g_stats.particleLit.exchange(0) / f);
   fprintf(out, "   alpha-blended particle draws per frame left unlit (they glow: $addself, overbright, or by name): %.1f\n",
