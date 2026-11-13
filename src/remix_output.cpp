@@ -130,8 +130,9 @@ struct Stats {
   std::atomic<uint32_t> cableBack{0};
   // ParticleSphere draws: coloured by their vertices, not their normal map.
   std::atomic<uint32_t> particleSphere{0};
-  // Particle draws lit by the traced scene (REMIXAPI_SPRITE_LIT_EXT).
-  std::atomic<uint32_t> particleLit{0};
+  // Particle draws lit by the traced scene (REMIXAPI_SPRITE_LIT_EXT), and
+  // those left unlit because they glow by themselves (glowingParticle).
+  std::atomic<uint32_t> particleLit{0}, particleGlowing{0};
   // Decals (onDraw): by kind (DecalKind order), by what marked them, and how
   // they were lifted off their receiver.
   std::atomic<uint32_t> decalKinds[5] = {};
@@ -4306,6 +4307,39 @@ std::atomic<uint32_t> g_usParticles{0};
 // place: traced, a ray met one or the other from frame to frame, and the rope
 // flickered between the fringe's texture and its own black. The back pass is
 // left out.
+// A particle material that glows by itself, told by its name: fire and what
+// goes with it, sparks, flashes, beams. Lower case parts of the material's
+// path; OPENREMIX_PROXY_PARTICLES_UNLIT adds more, ';'-separated.
+bool glowingParticle(const char *material) {
+  static const std::vector<std::string> parts = [] {
+    std::vector<std::string> out = {"fire",  "flame", "burn",  "ember", "spark", "glow",   "flare", "flash",
+                                    "explo", "muzzle", "laser", "plasma", "energy", "electric", "lightning",
+                                    "tracer", "beam",  "lava",  "molten", "bfg",   "combineball", "ar2_alt"};
+    char extra[1024] = {};
+    if (GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLES_UNLIT", extra, sizeof(extra))) {
+      std::string list = extra;
+      for (size_t at = 0; at <= list.size();) {
+        const size_t end = std::min(list.find(';', at), list.size());
+        std::string part = list.substr(at, end - at);
+        for (char &c : part)
+          c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (!part.empty())
+          out.push_back(part);
+        at = end + 1;
+      }
+    }
+    return out;
+  }();
+  if (!material)
+    return false;
+  std::string name = material;
+  for (char &c : name)
+    c = char(std::tolower(static_cast<unsigned char>(c)));
+  for (const auto &part : parts)
+    if (name.find(part) != std::string::npos)
+      return true;
+  return false;
+}
 bool cableBackPass() {
   const char *name = engine_materials::currentName();
   const size_t length = name ? std::strlen(name) : 0;
@@ -4977,10 +5011,19 @@ bool submitParticles(const Draw &d, ParticleKind kind, uint64_t viewKey, const f
       return !(GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLES_LIT", v, sizeof(v)) && v[0] == '0') &&
              GetProcAddress(game::runtimeModule(), "remixapi_SpriteLitSupportedEXT") != nullptr;
     }();
+    // Not what glows by itself though it blends as smoke does: fire, flames
+    // and embers (dim in a dark room, lit), by what the material says
+    // ($addself, $overbrightfactor above 1: premultiplied or gained above)
+    // or by its name. OPENREMIX_PROXY_PARTICLES_UNLIT adds name parts,
+    // ';'-separated.
     if (litParticles && inst.rasterOnly && !additive && !multiplies && d.blendOp == D3DBLENDOP_ADD &&
         d.dstBlend == D3DBLEND_INVSRCALPHA) {
-      spriteFlags |= REMIXAPI_SPRITE_LIT_EXT;
-      ++g_stats.particleLit;
+      if (premultiplied || result.gain > 1 || glowingParticle(engine_materials::currentName())) {
+        ++g_stats.particleGlowing;
+      } else {
+        spriteFlags |= REMIXAPI_SPRITE_LIT_EXT;
+        ++g_stats.particleLit;
+      }
     }
     if (inst.rasterOnly) {
       inst.spriteFlags = spriteFlags;
@@ -10270,6 +10313,8 @@ void dumpStatistics(FILE *out) {
     }
   fprintf(out, "   alpha-blended particle draws per frame lit by the traced scene: %.1f\n",
           g_stats.particleLit.exchange(0) / f);
+  fprintf(out, "   alpha-blended particle draws per frame left unlit (they glow: $addself, overbright, or by name): %.1f\n",
+          g_stats.particleGlowing.exchange(0) / f);
   fprintf(out, "   ParticleSphere (smoke) draws per frame, coloured by their vertices: %.1f\n",
           g_stats.particleSphere.exchange(0) / f);
   fprintf(out, "   cable (rope) back passes left out per frame: %.1f\n", g_stats.cableBack.exchange(0) / f);
