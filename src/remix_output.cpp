@@ -4315,10 +4315,11 @@ std::atomic<uint32_t> g_usParticles{0};
 // characters, flames of the particle system) is light in Source only where a
 // map or the game puts a light beside it; traced, a fire in a dark room lit
 // nothing. A particle draw that glows by itself (selfLitParticle: what its
-// material says, not its name) gives the scene lights: its quads are
-// gathered by where they are (cells of kParticleLightCell units), and each
-// cell's become one sphere light at their centre, of their size, sending
-// what they show: the sum over the quads of colour x coverage x area, over
+// material says, not its name) gives the scene lights: the frame's glowing
+// triangles that overlap one another are one effect (a fire's layered
+// sprites; two fires side by side are two), and each effect becomes one
+// sphere light at its centre, small beside its extent, sending what it
+// shows: the sum over the quads of colour x coverage x area, over
 // pi and the distance squared, as Source's lighting has a point light (a
 // surface a diffuse white under lighting 1 shows as the sprite's colour 1
 // does). Smoothed over a few frames (flames flicker by the frame) and kept a
@@ -4332,21 +4333,26 @@ std::atomic<uint32_t> g_usParticles{0};
 // scales them; _PARTICLE_LIGHT_NAMES / _PARTICLE_LIGHT_SKIP name materials
 // (parts of their paths, ';'-separated) that light or do not whatever the
 // above says.
-constexpr float kParticleLightCell = 160;
 constexpr uint32_t kParticleLightLimit = 24;
-struct ParticleLightSum {
-  double power[3] = {}, position[3] = {}, weight = 0, area = 0;
+// A glowing triangle of the frame (render thread; taken at present): its
+// centre, half its size, and what it sends (colour x coverage x area).
+struct ParticlePiece {
+  float centre[3], reach, power[3];
 };
-// This frame's, by cell (render thread; taken at present).
-std::unordered_map<uint64_t, ParticleLightSum> g_particleLightSums;
+std::vector<ParticlePiece> g_particlePieces;
+constexpr size_t kParticlePieceLimit = 4096;
 constexpr float kParticleLightPower = 12;
 constexpr uint64_t kParticleLightAge = 120; // statistics: lights in their first frames
+// An effect's light, kept from frame to frame (smoothed): found again by its
+// place.
 struct ParticleLightState {
-  float power[3] = {}, position[3] = {}, radius = 8;
+  float power[3] = {}, position[3] = {}, radius = 2, extent = 0;
   uint64_t lastFrame = 0;
-  uint64_t since = 0; // tick it began to glow at (or the light it carried on from did)
+  uint64_t since = 0; // tick it began to glow at
+  uint64_t id = 0;
 };
-std::unordered_map<uint64_t, ParticleLightState> g_particleLights;
+std::vector<ParticleLightState> g_particleLights;
+uint64_t g_particleLightIds = 0;
 bool particleLightsEnabled() {
   static const bool enabled = [] {
     char v[8] = {};
@@ -4450,20 +4456,15 @@ void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, 
       continue;
     const float centre[3] = {(p[0][0] + p[1][0] + p[2][0]) / 3, (p[0][1] + p[1][1] + p[2][1]) / 3,
                              (p[0][2] + p[1][2] + p[2][2]) / 3};
-    const int32_t cell[3] = {int32_t(std::floor(centre[0] / kParticleLightCell)),
-                             int32_t(std::floor(centre[1] / kParticleLightCell)),
-                             int32_t(std::floor(centre[2] / kParticleLightCell))};
-    auto &sum = g_particleLightSums[fnv(cell, sizeof(cell), 0x70617274696c6974ull) | 1];
-    double weight = 0;
-    for (int k = 0; k < 3; ++k) {
-      const double power = double(colour[k]) * gain * alpha * texture[k] * area;
-      sum.power[k] += power;
-      weight += power;
-    }
+    if (g_particlePieces.size() >= kParticlePieceLimit)
+      return;
+    ParticlePiece piece = {};
+    std::memcpy(piece.centre, centre, sizeof(centre));
+    // (A quad is two of these: half its side.)
+    piece.reach = .5f * std::sqrt(2 * area);
     for (int k = 0; k < 3; ++k)
-      sum.position[k] += centre[k] * weight;
-    sum.weight += weight;
-    sum.area += area;
+      piece.power[k] = colour[k] * gain * alpha * texture[k] * area;
+    g_particlePieces.push_back(piece);
   }
 }
 
@@ -8930,57 +8931,146 @@ void onPresent() {
           addDefined(e.hash, l);
         }
     engine_lights::report(styled, styledOff, duplicates);
-    // Particle lights: this frame's sums into the lights kept (smoothed),
-    // the strongest first where there are more than the limit.
+    // Particle lights: this frame's glowing pieces into effects (those that
+    // overlap one another), the effects into the lights kept (found again
+    // by their place, smoothed), the strongest first past the limit.
     if (particleLightsEnabled()) {
       static const float particleScale = envScale("OPENREMIX_PROXY_PARTICLE_LIGHT_SCALE", 6.0f);
       static const float lightScale = envScale("OPENREMIX_PROXY_LIGHT_SCALE", 1.0f);
       static const float sunScale = envScale("OPENREMIX_PROXY_SUN_SCALE", 1.0f);
       constexpr float kBlend = .25f; // a flame's flicker over about four frames
       const uint64_t now = GetTickCount64();
-      for (auto &[key, sum] : g_particleLightSums) {
-        if (!(sum.weight > 0))
+      struct Effect {
+        double power[3] = {}, position[3] = {}, weight = 0, spread = 0;
+      };
+      std::vector<Effect> effects;
+      {
+        // Union-find over the pieces; neighbours through a grid of cells no
+        // smaller than a piece's reach (larger pieces reach as far as a cell).
+        const auto &pieces = g_particlePieces;
+        const size_t count = pieces.size();
+        std::vector<uint32_t> parent(count);
+        for (size_t i = 0; i < count; ++i)
+          parent[i] = uint32_t(i);
+        auto find = [&](uint32_t i) {
+          while (parent[i] != i)
+            i = parent[i] = parent[parent[i]];
+          return i;
+        };
+        constexpr float kCell = 48;
+        std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+        auto cellKey = [](int32_t x, int32_t y, int32_t z) {
+          const int32_t cell[3] = {x, y, z};
+          return fnv(cell, sizeof(cell), 0x70617274696c6974ull);
+        };
+        for (size_t i = 0; i < count; ++i) {
+          const auto &a = pieces[i];
+          const int32_t cell[3] = {int32_t(std::floor(a.centre[0] / kCell)), int32_t(std::floor(a.centre[1] / kCell)),
+                                   int32_t(std::floor(a.centre[2] / kCell))};
+          for (int32_t dx = -1; dx <= 1; ++dx)
+            for (int32_t dy = -1; dy <= 1; ++dy)
+              for (int32_t dz = -1; dz <= 1; ++dz) {
+                const auto found = grid.find(cellKey(cell[0] + dx, cell[1] + dy, cell[2] + dz));
+                if (found == grid.end())
+                  continue;
+                for (uint32_t j : found->second) {
+                  const auto &b = pieces[j];
+                  const float d[3] = {a.centre[0] - b.centre[0], a.centre[1] - b.centre[1], a.centre[2] - b.centre[2]};
+                  // (Half as far again as they touch: a flame's sprites
+                  // drift apart and are one fire.)
+                  const float reach = std::min(1.5f * (a.reach + b.reach), kCell);
+                  if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < reach * reach)
+                    parent[find(uint32_t(i))] = find(j);
+                }
+              }
+          grid[cellKey(cell[0], cell[1], cell[2])].push_back(uint32_t(i));
+        }
+        std::unordered_map<uint32_t, size_t> index;
+        for (size_t i = 0; i < count; ++i) {
+          const auto [slot, fresh] = index.try_emplace(find(uint32_t(i)), effects.size());
+          if (fresh)
+            effects.emplace_back();
+          Effect &e = effects[slot->second];
+          const double weight = double(pieces[i].power[0]) + pieces[i].power[1] + pieces[i].power[2];
+          for (int k = 0; k < 3; ++k) {
+            e.power[k] += pieces[i].power[k];
+            e.position[k] += pieces[i].centre[k] * weight;
+          }
+          e.weight += weight;
+        }
+        // An effect's extent: its pieces' mean distance from its centre
+        // (weighted as the centre is), and their own size there.
+        for (auto &e : effects)
+          if (e.weight > 0)
+            for (double &c : e.position)
+              c /= e.weight;
+        for (size_t i = 0; i < count; ++i) {
+          Effect &e = effects[index[find(uint32_t(i))]];
+          if (!(e.weight > 0))
+            continue;
+          const double d[3] = {pieces[i].centre[0] - e.position[0], pieces[i].centre[1] - e.position[1],
+                               pieces[i].centre[2] - e.position[2]};
+          const double weight = double(pieces[i].power[0]) + pieces[i].power[1] + pieces[i].power[2];
+          e.spread += (std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) + pieces[i].reach) * weight / e.weight;
+        }
+        g_particlePieces.clear();
+      }
+      // Each effect to the light kept nearest it, within that light's extent
+      // (an effect moves and flickers from frame to frame), or a new one.
+      std::vector<bool> taken(g_particleLights.size(), false);
+      for (const auto &e : effects) {
+        if (!(e.weight > 0))
           continue;
-        auto &light = g_particleLights[key];
-        const bool fresh = light.lastFrame == 0 || g_frame - light.lastFrame > 30;
-        const float blend = fresh ? 1.f : kBlend;
-        if (fresh) {
-          // It began now, unless it carries on from a light beside it (a
-          // fire that moved into the next cell: a burning thing that runs).
-          light.since = now;
-          const float at[3] = {float(sum.position[0] / sum.weight), float(sum.position[1] / sum.weight),
-                               float(sum.position[2] / sum.weight)};
-          for (const auto &[otherKey, other] : g_particleLights) {
-            const float d[3] = {other.position[0] - at[0], other.position[1] - at[1], other.position[2] - at[2]};
-            if (otherKey != key && other.lastFrame && g_frame - other.lastFrame <= 12 &&
-                d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 1.5f * 1.5f * kParticleLightCell * kParticleLightCell)
-              light.since = std::min(light.since, other.since);
+        const float at[3] = {float(e.position[0]), float(e.position[1]), float(e.position[2])};
+        const float extent = float(e.spread);
+        size_t best = ~size_t(0);
+        float bestDistance = 0;
+        for (size_t i = 0; i < taken.size(); ++i) {
+          if (taken[i])
+            continue;
+          const auto &light = g_particleLights[i];
+          const float d[3] = {light.position[0] - at[0], light.position[1] - at[1], light.position[2] - at[2]};
+          const float distance = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+          if (distance < std::max({light.extent, extent, 16.f}) && (best == ~size_t(0) || distance < bestDistance)) {
+            best = i;
+            bestDistance = distance;
           }
         }
-        for (int k = 0; k < 3; ++k) {
-          light.power[k] += (float(sum.power[k]) - light.power[k]) * blend;
-          light.position[k] += (float(sum.position[k] / sum.weight) - light.position[k]) * blend;
+        if (best == ~size_t(0)) {
+          best = g_particleLights.size();
+          g_particleLights.emplace_back();
+          taken.push_back(false);
+          g_particleLights[best].since = now;
+          g_particleLights[best].id = ++g_particleLightIds;
         }
-        // The quads' size as a sphere's radius (they overlap: a part of it).
-        const float radius = std::clamp(.25f * std::sqrt(float(sum.area)), 2.f, 48.f);
+        taken[best] = true;
+        auto &light = g_particleLights[best];
+        const float blend = light.lastFrame == 0 ? 1.f : kBlend;
+        for (int k = 0; k < 3; ++k) {
+          light.power[k] += (float(e.power[k]) - light.power[k]) * blend;
+          light.position[k] += (at[k] - light.position[k]) * blend;
+        }
+        light.extent += (extent - light.extent) * blend;
+        // A sphere a fraction of the effect's extent, and small: a flame on
+        // the ground is not a ball half in it.
+        const float radius = std::clamp(.25f * extent, 1.f, 6.f);
         light.radius += (radius - light.radius) * blend;
         light.lastFrame = g_frame;
       }
-      g_particleLightSums.clear();
       std::vector<std::pair<float, uint64_t>> order;
-      for (auto it = g_particleLights.begin(); it != g_particleLights.end();) {
-        auto &light = it->second;
+      for (size_t i = 0; i < g_particleLights.size();) {
+        auto &light = g_particleLights[i];
         if (light.lastFrame != g_frame) {
           // No longer drawn: it dies down over a few frames.
           for (float &c : light.power)
             c *= 1 - kBlend;
           if (g_frame - light.lastFrame > 12) {
-            it = g_particleLights.erase(it);
+            g_particleLights.erase(g_particleLights.begin() + ptrdiff_t(i));
             continue;
           }
         }
-        order.emplace_back(light.power[0] + light.power[1] + light.power[2], it->first);
-        ++it;
+        order.emplace_back(light.power[0] + light.power[1] + light.power[2], uint64_t(i));
+        ++i;
       }
       std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
       // (This frame's own particle lights are added after the tests below:
@@ -8990,7 +9080,7 @@ void onPresent() {
       for (const auto &[power, key] : order) {
         if (made.size() >= kParticleLightLimit)
           break;
-        const auto &light = g_particleLights[key];
+        const auto &light = g_particleLights[size_t(key)];
         // Weak, young, or lit already (see Particle lights).
         if (!(power >= kParticleLightPower)) {
           ++g_stats.particleLightWeak;
@@ -9032,7 +9122,7 @@ void onPresent() {
         for (float &c : params.radiance)
           c *= resize;
         params.radius = light.radius;
-        made.emplace_back(key ^ 0x5041525449434c45ull, l);
+        made.emplace_back(fnv(&light.id, sizeof(light.id), 0x5041525449434c45ull) | 1, l);
         madeParams.push_back(params);
       }
       for (size_t i = 0; i < made.size(); ++i) {
