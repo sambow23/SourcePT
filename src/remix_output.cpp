@@ -130,6 +130,8 @@ struct Stats {
   std::atomic<uint32_t> cableBack{0};
   // ParticleSphere draws: coloured by their vertices, not their normal map.
   std::atomic<uint32_t> particleSphere{0};
+  // Particle draws lit by the traced scene (REMIXAPI_SPRITE_LIT_EXT).
+  std::atomic<uint32_t> particleLit{0};
   // Decals (onDraw): by kind (DecalKind order), by what marked them, and how
   // they were lifted off their receiver.
   std::atomic<uint32_t> decalKinds[5] = {};
@@ -4964,6 +4966,22 @@ bool submitParticles(const Draw &d, ParticleKind kind, uint64_t viewKey, const f
 #endif
     }
     inst.particle = true;
+    // Alpha-blended particles (smoke, dust, steam; not the additive ones,
+    // which are lights of their own, nor those that multiply the frame) are
+    // unlit in Source: texture times vertex colour, as bright in a dark room
+    // as in the sun. Where the runtime has it (REMIXAPI_SPRITE_LIT_EXT) they
+    // take the light of the traced scene around them.
+    // OPENREMIX_PROXY_PARTICLES_LIT=0: as before.
+    static const bool litParticles = [] {
+      char v[8] = {};
+      return !(GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLES_LIT", v, sizeof(v)) && v[0] == '0') &&
+             GetProcAddress(game::runtimeModule(), "remixapi_SpriteLitSupportedEXT") != nullptr;
+    }();
+    if (litParticles && inst.rasterOnly && !additive && !multiplies && d.blendOp == D3DBLENDOP_ADD &&
+        d.dstBlend == D3DBLEND_INVSRCALPHA) {
+      spriteFlags |= REMIXAPI_SPRITE_LIT_EXT;
+      ++g_stats.particleLit;
+    }
     if (inst.rasterOnly) {
       inst.spriteFlags = spriteFlags;
       std::memcpy(inst.spriteSoft, spriteSoft, sizeof(spriteSoft));
@@ -10250,6 +10268,8 @@ void dumpStatistics(FILE *out) {
               g_stats.modulatedDraws.exchange(0) / f, g_stats.modulatedBlack.exchange(0) / f,
               g_stats.modulatedMasked.exchange(0) / f, g_stats.modulatedMetal.exchange(0) / f, m[0], m[1], m[2], m[3]);
     }
+  fprintf(out, "   alpha-blended particle draws per frame lit by the traced scene: %.1f\n",
+          g_stats.particleLit.exchange(0) / f);
   fprintf(out, "   ParticleSphere (smoke) draws per frame, coloured by their vertices: %.1f\n",
           g_stats.particleSphere.exchange(0) / f);
   fprintf(out, "   cable (rope) back passes left out per frame: %.1f\n", g_stats.cableBack.exchange(0) / f);
