@@ -4316,9 +4316,9 @@ std::atomic<uint32_t> g_usParticles{0};
 // map or the game puts a light beside it; traced, a fire in a dark room lit
 // nothing. A particle draw that glows by itself (selfLitParticle: what its
 // material says, not its name) gives the scene lights: the frame's glowing
-// triangles that overlap one another are one effect (a fire's layered
-// sprites; two fires side by side are two), and each effect becomes one
-// sphere light at its centre, small beside its extent, sending what it
+// triangles that lie over one another (the centre of one within the other)
+// are one effect (a fire's layered sprites; sprites side by side are
+// apart), and each effect becomes one sphere light at its centre, small beside its extent, sending what it
 // shows: the sum over the quads of colour x coverage x area, over
 // pi and the distance squared, as Source's lighting has a point light (a
 // surface a diffuse white under lighting 1 shows as the sprite's colour 1
@@ -4333,7 +4333,7 @@ std::atomic<uint32_t> g_usParticles{0};
 // scales them; _PARTICLE_LIGHT_NAMES / _PARTICLE_LIGHT_SKIP name materials
 // (parts of their paths, ';'-separated) that light or do not whatever the
 // above says.
-constexpr uint32_t kParticleLightLimit = 24;
+constexpr uint32_t kParticleLightLimit = 48;
 // A glowing triangle of the frame (render thread; taken at present): its
 // centre, half its size, and what it sends (colour x coverage x area).
 struct ParticlePiece {
@@ -8976,9 +8976,10 @@ void onPresent() {
                 for (uint32_t j : found->second) {
                   const auto &b = pieces[j];
                   const float d[3] = {a.centre[0] - b.centre[0], a.centre[1] - b.centre[1], a.centre[2] - b.centre[2]};
-                  // (Half as far again as they touch: a flame's sprites
-                  // drift apart and are one fire.)
-                  const float reach = std::min(1.5f * (a.reach + b.reach), kCell);
+                  // (The centre of one within the other: a quad's two
+                  // halves, sprites layered at one place. Sprites that only
+                  // touch, or stand near one another, are lights apiece.)
+                  const float reach = std::min(std::max(a.reach, b.reach), kCell);
                   if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < reach * reach)
                     parent[find(uint32_t(i))] = find(j);
                 }
@@ -9031,7 +9032,7 @@ void onPresent() {
           const auto &light = g_particleLights[i];
           const float d[3] = {light.position[0] - at[0], light.position[1] - at[1], light.position[2] - at[2]};
           const float distance = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-          if (distance < std::max({light.extent, extent, 16.f}) && (best == ~size_t(0) || distance < bestDistance)) {
+          if (distance < std::max({light.extent, extent, 8.f}) && (best == ~size_t(0) || distance < bestDistance)) {
             best = i;
             bestDistance = distance;
           }
