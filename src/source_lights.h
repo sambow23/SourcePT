@@ -33,6 +33,9 @@ struct LightParams {
   float coneAngle = 0, coneSoftness = 0, focusExponent = 0;
   float volumetric = 1;
   bool enabled = true;
+  // Sphere lights: nothing nearer the centre than this shadows the light
+  // (remixapi_LightInfoShadowClearanceEXT). 0: none.
+  float shadowClearance = 0;
 };
 
 // The parameters createLight gives a Source light; false when it makes none

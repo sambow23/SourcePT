@@ -83,6 +83,8 @@ remixapi_LightHandle createLight(remixapi_Interface &api, const SourceLight &lig
   remixapi_LightInfoSphereEXT sphere = {};
   remixapi_LightInfoForwardCutoffEXT cutoff{REMIXAPI_STRUCT_TYPE_LIGHT_INFO_FORWARD_CUTOFF_EXT, nullptr,
                                            light.forwardCutoff};
+  remixapi_LightInfoShadowClearanceEXT clearance{REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SHADOW_CLEARANCE_EXT, nullptr,
+                                                 params.shadowClearance};
   remixapi_LightInfoBakingEXT baking{REMIXAPI_STRUCT_TYPE_LIGHT_BAKING_EXT, nullptr,
                                     REMIXAPI_LIGHT_BAKING_PREFER_BAKED_EXT};
   remixapi_LightInfoCookieEXT cookie = {};
@@ -124,6 +126,10 @@ remixapi_LightHandle createLight(remixapi_Interface &api, const SourceLight &lig
     if (light.forwardCutoff > 0 && (params.type == 1 || params.type == 3)) {
       cutoff.pNext = sphere.pNext;
       sphere.pNext = &cutoff;
+    }
+    if (params.shadowClearance > 0 && std::isfinite(params.shadowClearance)) {
+      clearance.pNext = sphere.pNext;
+      sphere.pNext = &clearance;
     }
     info.pNext = &sphere;
   }

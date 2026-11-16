@@ -4329,6 +4329,8 @@ std::atomic<uint32_t> g_usParticles{0};
 //   weak      what it sends is under kParticleLightPower (a lone spark);
 //   lit       a light of the map or the engine stands within its reach (the
 //             glow sprite of a lamp, a fire the mapper put a light by).
+// Nothing within its glow shadows a particle light (the runtime's shadow
+// clearance): _PARTICLE_LIGHT_CLEARANCE caps that distance (32 units).
 // OPENREMIX_PROXY_PARTICLE_LIGHTS=0 turns them off; _PARTICLE_LIGHT_SCALE
 // scales them; _PARTICLE_LIGHT_NAMES / _PARTICLE_LIGHT_SKIP name materials
 // (parts of their paths, ';'-separated) that light or do not whatever the
@@ -9151,6 +9153,11 @@ void onPresent() {
         for (float &c : params.radiance)
           c *= resize;
         params.radius = light.radius;
+        // Nothing within its glow shadows it: the sprite is drawn over what
+        // holds it (a fire in a barrel, the glow in a hover ball). Capped:
+        // beyond a floor or a wall that near, it would light the other side.
+        static const float clearance = envScale("OPENREMIX_PROXY_PARTICLE_LIGHT_CLEARANCE", 32.0f);
+        params.shadowClearance = std::min(light.extent, clearance);
         made.emplace_back(fnv(&light.id, sizeof(light.id), 0x5041525449434c45ull) | 1, l);
         madeParams.push_back(params);
       }
@@ -9161,7 +9168,7 @@ void onPresent() {
         // (Its fields one by one: the structure has padding.)
         const float definition[8] = {made[i].second.position[0], made[i].second.position[1], made[i].second.position[2],
                                      madeParams[i].radiance[0],  madeParams[i].radiance[1],  madeParams[i].radiance[2],
-                                     madeParams[i].radius,       0};
+                                     madeParams[i].radius,       madeParams[i].shadowClearance};
         g_lightDefinitions[hash] = fnv(definition, sizeof(definition)) | 1;
         ++g_stats.particleLights;
       }
