@@ -4316,7 +4316,8 @@ std::atomic<uint32_t> g_usParticles{0};
 // map or the game puts a light beside it; traced, a fire in a dark room lit
 // nothing. A particle draw that glows by itself (selfLitParticle: what its
 // material says, not its name) gives the scene lights: the frame's glowing
-// sprites of one draw call that touch are one effect (a fire's flames), as
+// sprites of one draw call that lie over one another are one effect (a
+// fire's flames; the centre of one within the other), as
 // are sprites of any draws about one centre (within an eighth of the
 // larger's side: a glow and its core); things side by side, drawn apart,
 // are apart, however their glows overlap, and each effect becomes one sphere light at its centre, small beside its extent, sending what it
@@ -9011,14 +9012,16 @@ void onPresent() {
                 for (uint32_t j : found->second) {
                   const auto &b = pieces[j];
                   const float d[3] = {a.centre[0] - b.centre[0], a.centre[1] - b.centre[1], a.centre[2] - b.centre[2]};
-                  // Sprites of one draw that touch are one effect (a fire's
-                  // flames: apiece, each was too weak for a light, and which
-                  // was not changed by the frame). Sprites of draws apart
+                  // Sprites of one draw that lie over one another (the centre
+                  // of one within the other) are one effect (a fire's flames:
+                  // apiece, each was too weak for a light, and which was not
+                  // changed by the frame). Not those that only touch: fires
+                  // beside one another come in one draw. Sprites of draws apart
                   // only about one centre (a glow and its core): things that
                   // stand near one another are lights apiece, however large
                   // and overlapping their glows.
                   const float reach = std::min(
-                      a.draw == b.draw ? a.reach + b.reach : .25f * std::max(a.reach, b.reach), kCell);
+                      (a.draw == b.draw ? 1.f : .25f) * std::max(a.reach, b.reach), kCell);
                   if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < reach * reach)
                     parent[find(uint32_t(i))] = find(j);
                 }
