@@ -4316,9 +4316,9 @@ std::atomic<uint32_t> g_usParticles{0};
 // map or the game puts a light beside it; traced, a fire in a dark room lit
 // nothing. A particle draw that glows by itself (selfLitParticle: what its
 // material says, not its name) gives the scene lights: the frame's glowing
-// triangles that lie over one another (the centre of one within the other)
-// are one effect (a fire's layered sprites; sprites side by side are
-// apart), and each effect becomes one sphere light at its centre, small beside its extent, sending what it
+// sprites about one centre (within an eighth of the larger's side) are one
+// effect (a glow and its core; sprites side by side are apart, however
+// their glows overlap), and each effect becomes one sphere light at its centre, small beside its extent, sending what it
 // shows: the sum over the quads of colour x coverage x area, over
 // pi and the distance squared, as Source's lighting has a point light (a
 // surface a diffuse white under lighting 1 shows as the sprite's colour 1
@@ -4427,6 +4427,10 @@ bool lightingParticle(bool selfLit) {
 // colours were divided by; `toWorld`: the vertices' space to world, or null.
 void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, const std::vector<uint32_t> &indices,
                          const float texture[3], float gain, const float (*toWorld)[4]) {
+  // Whether the triangle before this one made a piece that waits for its
+  // quad's other half, and its area.
+  bool paired = false;
+  float pairedArea = 0;
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
     float p[3][3], colour[3] = {}, alpha = 0;
     bool valid = true;
@@ -4446,25 +4450,49 @@ void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, 
       colour[2] += std::pow(float(v.color & 255) / 255, 2.2f) / 3;
       alpha += float(v.color >> 24) / 255 / 3;
     }
-    if (!valid)
+    if (!valid) {
+      paired = false;
       continue;
+    }
     const float e1[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
     const float e2[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
     const float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
     const float area = .5f * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-    if (!(area > 0) || !std::isfinite(area))
+    if (!(area > 0) || !std::isfinite(area)) {
+      paired = false;
       continue;
+    }
     const float centre[3] = {(p[0][0] + p[1][0] + p[2][0]) / 3, (p[0][1] + p[1][1] + p[2][1]) / 3,
                              (p[0][2] + p[1][2] + p[2][2]) / 3};
+    // A sprite is a quad, two triangles with an edge in common: one piece.
+    int common = 0;
+    if (paired)
+      for (int a = 0; a < 3; ++a)
+        for (int b = 0; b < 3; ++b)
+          common += indices[i + a] == indices[i - 3 + b];
+    if (paired && common >= 2) {
+      ParticlePiece &piece = g_particlePieces.back();
+      const float total = pairedArea + area;
+      for (int k = 0; k < 3; ++k) {
+        piece.centre[k] = (piece.centre[k] * pairedArea + centre[k] * area) / total;
+        piece.power[k] += colour[k] * gain * alpha * texture[k] * area;
+      }
+      piece.reach = .5f * std::sqrt(total);
+      paired = false;
+      continue;
+    }
+    paired = false;
     if (g_particlePieces.size() >= kParticlePieceLimit)
       return;
     ParticlePiece piece = {};
     std::memcpy(piece.centre, centre, sizeof(centre));
-    // (A quad is two of these: half its side.)
+    // (Half the side of the quad it is half of, until its other half comes.)
     piece.reach = .5f * std::sqrt(2 * area);
     for (int k = 0; k < 3; ++k)
       piece.power[k] = colour[k] * gain * alpha * texture[k] * area;
     g_particlePieces.push_back(piece);
+    paired = true;
+    pairedArea = area;
   }
 }
 
@@ -8976,10 +9004,10 @@ void onPresent() {
                 for (uint32_t j : found->second) {
                   const auto &b = pieces[j];
                   const float d[3] = {a.centre[0] - b.centre[0], a.centre[1] - b.centre[1], a.centre[2] - b.centre[2]};
-                  // (The centre of one within the other: a quad's two
-                  // halves, sprites layered at one place. Sprites that only
-                  // touch, or stand near one another, are lights apiece.)
-                  const float reach = std::min(std::max(a.reach, b.reach), kCell);
+                  // (About one centre: a glow and its core, a flame's layers.
+                  // Sprites that stand near one another are lights apiece,
+                  // however large and overlapping their glows.)
+                  const float reach = std::min(.25f * std::max(a.reach, b.reach), kCell);
                   if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < reach * reach)
                     parent[find(uint32_t(i))] = find(j);
                 }
