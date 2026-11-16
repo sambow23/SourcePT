@@ -4316,9 +4316,10 @@ std::atomic<uint32_t> g_usParticles{0};
 // map or the game puts a light beside it; traced, a fire in a dark room lit
 // nothing. A particle draw that glows by itself (selfLitParticle: what its
 // material says, not its name) gives the scene lights: the frame's glowing
-// sprites about one centre (within an eighth of the larger's side) are one
-// effect (a glow and its core; sprites side by side are apart, however
-// their glows overlap), and each effect becomes one sphere light at its centre, small beside its extent, sending what it
+// sprites of one draw call that touch are one effect (a fire's flames), as
+// are sprites of any draws about one centre (within an eighth of the
+// larger's side: a glow and its core); things side by side, drawn apart,
+// are apart, however their glows overlap, and each effect becomes one sphere light at its centre, small beside its extent, sending what it
 // shows: the sum over the quads of colour x coverage x area, over
 // pi and the distance squared, as Source's lighting has a point light (a
 // surface a diffuse white under lighting 1 shows as the sprite's colour 1
@@ -4340,6 +4341,7 @@ constexpr uint32_t kParticleLightLimit = 48;
 // centre, half its size, and what it sends (colour x coverage x area).
 struct ParticlePiece {
   float centre[3], reach, power[3];
+  uint32_t draw; // the draw call it came in (one effect's sprites come in one)
 };
 std::vector<ParticlePiece> g_particlePieces;
 constexpr size_t kParticlePieceLimit = 4096;
@@ -4433,6 +4435,8 @@ void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, 
   // quad's other half, and its area.
   bool paired = false;
   float pairedArea = 0;
+  static uint32_t draws = 0;
+  const uint32_t draw = ++draws;
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
     float p[3][3], colour[3] = {}, alpha = 0;
     bool valid = true;
@@ -4490,6 +4494,7 @@ void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, 
     std::memcpy(piece.centre, centre, sizeof(centre));
     // (Half the side of the quad it is half of, until its other half comes.)
     piece.reach = .5f * std::sqrt(2 * area);
+    piece.draw = draw;
     for (int k = 0; k < 3; ++k)
       piece.power[k] = colour[k] * gain * alpha * texture[k] * area;
     g_particlePieces.push_back(piece);
@@ -9006,10 +9011,14 @@ void onPresent() {
                 for (uint32_t j : found->second) {
                   const auto &b = pieces[j];
                   const float d[3] = {a.centre[0] - b.centre[0], a.centre[1] - b.centre[1], a.centre[2] - b.centre[2]};
-                  // (About one centre: a glow and its core, a flame's layers.
-                  // Sprites that stand near one another are lights apiece,
-                  // however large and overlapping their glows.)
-                  const float reach = std::min(.25f * std::max(a.reach, b.reach), kCell);
+                  // Sprites of one draw that touch are one effect (a fire's
+                  // flames: apiece, each was too weak for a light, and which
+                  // was not changed by the frame). Sprites of draws apart
+                  // only about one centre (a glow and its core): things that
+                  // stand near one another are lights apiece, however large
+                  // and overlapping their glows.
+                  const float reach = std::min(
+                      a.draw == b.draw ? a.reach + b.reach : .25f * std::max(a.reach, b.reach), kCell);
                   if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < reach * reach)
                     parent[find(uint32_t(i))] = find(j);
                 }
