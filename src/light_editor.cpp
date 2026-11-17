@@ -56,7 +56,11 @@ struct ImGuiApi {
   int (*isMouseClicked)(int) = nullptr;
   int (*isAnyWindowHovered)() = nullptr;
   void (*setScrollHereY)(float) = nullptr;
-  void (*setDrawTitle)(const char *) = nullptr; // newer runtimes'
+  // Newer runtimes': the tab's name, and the developer panel's own widgets.
+  void (*setDrawTitle)(const char *) = nullptr;
+  int (*beginPanel)(const char *, int) = nullptr;
+  void (*endPanel)() = nullptr;
+  int (*optionCheckbox)(const char *, int *) = nullptr;
 
   bool load(HMODULE runtime) {
     bool ok = true;
@@ -96,6 +100,11 @@ struct ImGuiApi {
     get(setScrollHereY, "remixapi_imgui_SetScrollHereY");
     const bool required = ok;
     get(setDrawTitle, "remixapi_imgui_SetDrawCallbackTitle");
+    get(beginPanel, "remixapi_imgui_BeginPanel");
+    get(endPanel, "remixapi_imgui_EndPanel");
+    get(optionCheckbox, "remixapi_imgui_OptionCheckbox");
+    if (!beginPanel || !endPanel)
+      beginPanel = nullptr, endPanel = nullptr;
     return required;
   }
 } g_ui;
@@ -212,7 +221,8 @@ bool saveOptions() {
 void drawOptions() {
   readOptions();
   int particleLights = g_particleLights.load() && !g_particleLightsForcedOff;
-  if (g_ui.checkbox("Particle lights", &particleLights) && !g_particleLightsForcedOff) {
+  if ((g_ui.optionCheckbox ? g_ui.optionCheckbox : g_ui.checkbox)("Particle lights", &particleLights) &&
+      !g_particleLightsForcedOff) {
     g_particleLights = particleLights != 0;
     if (!saveOptions())
       g_status = "could not write " + optionsFile().string();
@@ -222,7 +232,6 @@ void drawOptions() {
                         ? "Off by OPENREMIX_PROXY_PARTICLE_LIGHTS=0 in the environment."
                         : "Fire, glows and other particles that shine by themselves light the scene\n"
                           "(a light per effect). Off: only the map's and the engine's lights do.");
-  g_ui.separator();
 }
 
 std::filesystem::path mapFile(const std::string &map) {
@@ -501,16 +510,29 @@ void drawControls(Entry &e) {
     setEdit(e, p);
 }
 
-void drawPanel(void *) {
-  std::lock_guard<std::mutex> lock(g_lock);
-  drawOptions();
+// A section of the tab: the runtime's panel, or a title over it and a line
+// under it in a runtime without them. endSection whether it is open or not.
+bool beginSection(const char *title) {
+  if (g_ui.beginPanel)
+    return g_ui.beginPanel(title, 1) != 0;
+  g_ui.text(title);
+  return true;
+}
+void endSection() {
+  if (g_ui.endPanel)
+    g_ui.endPanel();
+  else
+    g_ui.separator();
+}
+
+void drawMapLights() {
   if (g_map.empty() || g_entries.empty()) {
-    g_ui.textWrapped("Map lights: no map with lights is loaded (the BSP world provides them).");
+    g_ui.textWrapped("No map with lights is loaded (the BSP world provides them).");
     return;
   }
   char text[300];
-  std::snprintf(text, sizeof(text), "Map lights: %s, %zu lights, %zu edited%s", g_map.c_str(), g_entries.size(),
-                g_edits.size(), unsaved() ? " (unsaved changes)" : "");
+  std::snprintf(text, sizeof(text), "%s: %zu lights, %zu edited%s", g_map.c_str(), g_entries.size(), g_edits.size(),
+                unsaved() ? " (unsaved changes)" : "");
   g_ui.text(text);
   int editMode = g_editMode;
   if (g_ui.checkbox("Edit mode", &editMode))
@@ -573,6 +595,16 @@ void drawPanel(void *) {
     drawControls(*e);
   else
     g_ui.textWrapped("Select a light in the list, or in the view with Edit mode on.");
+}
+
+void drawPanel(void *) {
+  std::lock_guard<std::mutex> lock(g_lock);
+  if (beginSection("Lighting"))
+    drawOptions();
+  endSection();
+  if (beginSection("Map lights"))
+    drawMapLights();
+  endSection();
 }
 
 // ---- the viewport (overlay callback) ----
