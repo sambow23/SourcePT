@@ -8218,13 +8218,23 @@ void onPresent() {
     enum class Role { Skip, Main, Sky, ViewModel, Screen, Portal };
     std::unordered_map<uint64_t, Role> roles;
     const View *viewModel = nullptr, *sky = nullptr;
+    // Render targets that hold this frame's main view reflected in water: no
+    // camera's, and neither is anything else drawn into them (the 3D skybox
+    // as the reflection sees it, drawn first: its "world_lists" marker noted
+    // it as a screen view, and it was one or not by the order the views came
+    // in below, which their keys decide: at some camera poses the reflected
+    // skybox came into the scene a second time, and lit the map).
+    std::unordered_set<const void *> mirrored;
+    for (auto &[key, v] : g_views)
+      if (v.screenTarget && key != mainKey && v.perspective && mirroredView(v.view, main->view)) {
+        mirrored.insert(v.screenTarget);
+        g_screenViews.erase(v.screenTarget);
+      }
     for (auto &[key, v] : g_views) {
       Role role = Role::Skip;
-      if (v.screenTarget && key != mainKey && v.perspective && mirroredView(v.view, main->view)) {
-        // This frame's main view reflected in water: no camera's (the
-        // "world_lists" marker tells it by the frame before's camera, which
-        // a moving camera's reflection does not match).
-        g_screenViews.erase(v.screenTarget);
+      if (v.screenTarget && key != mainKey && mirrored.count(v.screenTarget)) {
+        // (The "world_lists" marker tells the reflection by the frame
+        // before's camera, which a moving camera's reflection does not match.)
         ++g_mirroredViews;
       } else if (v.screenTarget && key != mainKey && !samePlacement(v.view, main->view)) {
         // Its camera's own view (not the skybox view drawn into it first, nor
