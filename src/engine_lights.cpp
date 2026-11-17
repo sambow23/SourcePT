@@ -287,7 +287,18 @@ bool finite3(const float *v) { return std::isfinite(v[0]) && std::isfinite(v[1])
 // As the engine hands a dlight to models (WorldLightFromDynamicLight, engine
 // 0x1e37a0): colour = byte * 2^exponent / 255, quadratic falloff only,
 // 1 / (max(minlight, 1) * max(radius, 0.1)^2); a spot when m_OuterAngle > 0.
-// The engine also cuts the light off at its radius; the path tracer does not.
+// The world (lightmaps: AddSingleDynamicLight, engine/gl_lightmap.cpp) is
+// lit by that falloff less a little, minlight * (radius^2 / d^2 - 1), no more
+// than twice the colour and nothing past the radius; neither is the inverse
+// square's, by which a surface a few units from a light tool's light was lit
+// hundreds of times what the game shows. The light carries both
+// (holdDistance: where that falloff is 2; fadeRange: the radius), unless
+// OPENREMIX_PROXY_DLIGHT_FALLOFF=0.
+// The game shadows nothing by a dynamic light, and what carries one stands
+// about it: a light tool's lamp has its light within its shade, which then
+// shadowed all but a disc under it. Nothing within
+// OPENREMIX_PROXY_DLIGHT_CLEARANCE units of the light (24; no more than a
+// quarter of its radius) shadows it.
 bool fromDLight(const DLight &d, Light &l) {
   if ((d.flags & 3) == 3 || !(d.radius > 0) || !std::isfinite(d.radius) || !finite3(d.origin))
     return false; // lights neither the world nor models
@@ -299,6 +310,16 @@ bool fromDLight(const DLight &d, Light &l) {
   std::memcpy(l.position, d.origin, 12);
   const float radius = std::max(d.radius, 0.1f), minlight = std::max(std::isfinite(d.minlight) ? d.minlight : 1, 1.0f);
   l.attenuation[2] = 1 / (minlight * radius * radius);
+  static const bool falloff = [] {
+    char v[8] = {};
+    return !(GetEnvironmentVariableA("OPENREMIX_PROXY_DLIGHT_FALLOFF", v, sizeof(v)) && v[0] == '0');
+  }();
+  if (falloff) {
+    l.holdDistance = radius * std::sqrt(minlight / (2 + minlight));
+    l.fadeRange = radius;
+  }
+  static const float clearance = envScale("OPENREMIX_PROXY_DLIGHT_CLEARANCE", 24.0f);
+  l.shadowClearance = std::min(clearance, .25f * radius);
   l.type = 1;
   if (d.outerAngle > 0 && d.outerAngle < 180 && std::isfinite(d.innerAngle) && finite3(d.direction)) {
     l.type = 3;

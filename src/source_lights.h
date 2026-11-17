@@ -14,10 +14,16 @@ struct SourceLight {
   float range, falloff, attenuation0, attenuation1, attenuation2, theta, phi, thetaDot, phiDot;
   // Projected cookie metadata follows the engine ABI prefix.
   float cookieUp[3] = {}, cookieFov = 0, forwardCutoff = 0;
+  // A dynamic light's falloff as the engine lights the world with it
+  // (remixapi_LightInfoFalloffEXT): no stronger within holdDistance than at
+  // it, nothing past fadeRange. 0: by the inverse square alone.
+  // shadowClearance: nothing nearer it than that shadows it (the thing that
+  // carries it; LightParams' is for the lights the wrapper makes itself).
+  float holdDistance = 0, fadeRange = 0, shadowClearance = 0, unused = 0;
   uint64_t cookie = 0;
 };
-static_assert(offsetof(SourceLight, cookieUp) == 76 && offsetof(SourceLight, cookie) == 96 &&
-              sizeof(SourceLight) == 104);
+static_assert(offsetof(SourceLight, cookieUp) == 76 && offsetof(SourceLight, cookie) == 112 &&
+              sizeof(SourceLight) == 120);
 
 // The Remix light a Source light becomes, in the terms a person edits
 // (light_editor): its type (SourceLight's: 1 point, 2 directional, 3 spot,

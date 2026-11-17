@@ -9014,6 +9014,9 @@ void onPresent() {
           l.attenuation2 = e.attenuation[2];
           l.thetaDot = e.thetaDot;
           l.phiDot = e.phiDot;
+          l.holdDistance = e.holdDistance;
+          l.fadeRange = e.fadeRange;
+          l.shadowClearance = e.shadowClearance;
           // The cookie once the runtime has its texture (until then a cone;
           // the definition changes when it arrives).
           if (!e.cookie.empty())

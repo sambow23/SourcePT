@@ -39,6 +39,11 @@ struct Light {
   float color[3] = {}, position[3] = {}, direction[3] = {};
   float attenuation[3] = {}; // constant, linear, quadratic
   float thetaDot = 0, phiDot = 0;
+  // Dynamic lights: no stronger within holdDistance than at it, and nothing
+  // past fadeRange (SourceLight's). 0: none.
+  float holdDistance = 0, fadeRange = 0;
+  // Dynamic lights: nothing nearer than this shadows it (SourceLight's).
+  float shadowClearance = 0;
   // Projected textures: the cookie's texture name (as materials name theirs)
   // and frame (animated textures), the projection's up vector and horizontal
   // field of view in degrees.
