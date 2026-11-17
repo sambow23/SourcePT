@@ -676,7 +676,7 @@ void sync(float lightScale, float sunScale) {
       return;
     }
     if (g_ui.setDrawTitle)
-      g_ui.setDrawTitle("Garry's Mod");
+      g_ui.setDrawTitle("SourcePT");
     g_ui.registerDraw(&drawPanel, nullptr);
     g_ui.registerOverlay(&drawOverlay, nullptr);
     g_uiState = "registered";

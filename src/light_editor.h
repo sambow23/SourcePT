@@ -13,7 +13,7 @@
 //  * Saved per map to garrysmod/data/openremix/lights/<map>.txt (the game
 //    root's openremix/lights in other games), and loaded with the map.
 //
-// The tab (named "Garry's Mod" where the runtime lets a plugin name it, and
+// The tab (named "SourcePT" where the runtime lets a plugin name it, and
 // "Plugin" in older ones) is in sections, the runtime's panels where it has
 // them for a plugin: Lighting holds the wrapper's options (particleLights;
 // saved as they change, to openremix/options.txt beside the lights
