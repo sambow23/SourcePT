@@ -342,7 +342,12 @@ bool fromDLight(const DLight &d, Light &l) {
 // passed with the projection's up vector and FOV; until the runtime has it,
 // the frustum becomes its inscribed cone (half the larger FOV) with the outer
 // half fading. Nothing ends the light at m_FarZ. Shadows are the path
-// tracer's. OPENREMIX_PROXY_PROJECTED_SCALE scales the brightness. Portal 2's
+// tracer's, but for what is nearer than m_NearZ, which the game's shadow
+// depth does not see: a lamp tool's projection starts within its lamp's
+// model (nearz 12), and all but the default one closed the light in. Nothing
+// within m_NearZ of the light along any ray of its cone (m_NearZ over the
+// cosine of half the FOV; no more than twice m_NearZ, nor a quarter of
+// m_FarZ) shadows it. OPENREMIX_PROXY_PROJECTED_SCALE scales the brightness. Portal 2's
 // shaders scale by r_flashlightbrightness (0.25, its default) and the state's
 // m_fBrightnessScale (env_projectedtexture's brightnessscale) as well.
 bool fromProjected(const FlashlightState &s, Light &l) {
@@ -381,6 +386,8 @@ bool fromProjected(const FlashlightState &s, Light &l) {
   const float outer = std::clamp(fov * 0.5f, 1.0f, 89.0f) * 0.01745329252f;
   l.phiDot = std::cos(outer);
   l.thetaDot = std::cos(outer * 0.5f);
+  if (s.nearZ > 0 && std::isfinite(s.nearZ))
+    l.shadowClearance = std::min(s.nearZ * std::min(1 / std::cos(outer), 2.0f), s.farZ * 0.25f);
   return true;
 }
 
@@ -394,7 +401,8 @@ bool sameLights(const std::vector<Light> &a, const std::vector<Light> &b) {
         !floats(x.color, y.color, 3) ||
         !floats(x.position, y.position, 3) || !floats(x.direction, y.direction, 3) ||
         !floats(x.attenuation, y.attenuation, 3) || x.thetaDot != y.thetaDot || x.phiDot != y.phiDot ||
-        !floats(x.up, y.up, 3) || x.fov != y.fov)
+        !floats(x.up, y.up, 3) || x.fov != y.fov || x.holdDistance != y.holdDistance ||
+        x.fadeRange != y.fadeRange || x.shadowClearance != y.shadowClearance)
       return false;
   }
   return true;
