@@ -136,6 +136,7 @@ struct Stats {
   // Particle draws that light the scene, and the lights made of them.
   std::atomic<uint32_t> particleLightDraws{0}, particleLights{0};
   // Candidates that made none: too weak, too young, a light beside them.
+  std::atomic<uint32_t> particleLightViewModel{0}; // glowing sprites drawn in a view model's view
   std::atomic<uint32_t> particleLightWeak{0}, particleLightYoung{0}, particleLightLit{0};
   // Decals (onDraw): by kind (DecalKind order), by what marked them, and how
   // they were lifted off their receiver.
@@ -4343,7 +4344,32 @@ constexpr uint32_t kParticleLightLimit = 48;
 struct ParticlePiece {
   float centre[3], reach, power[3];
   uint32_t draw; // the draw call it came in (one effect's sprites come in one)
+  uint64_t view; // the view it was drawn in (g_views' key)
+  bool placed;   // brought to where it looks to be already (a view model view's)
 };
+// The frame's view model views (set with the views' roles at present): what
+// is drawn in them is drawn with a narrower field of view than the world's,
+// so it stands farther ahead in the world than it looks (a physics gun's glow
+// a pace before the player, in the wall he walks up to). `depth`: the world's
+// projection scale over the view's. A piece of such a view is brought nearer
+// the eye along the camera's forward by it, to where the world's projection
+// shows what the view model's showed there.
+// A weapon's glow may also be drawn in the world's view, with the world's
+// sprites and where the world's projection shows it at the model's muzzle
+// (Garry's Mod's physics gun): as far ahead as the muzzle is in the view
+// model's space, and nothing in the draw tells it from a glow of the world.
+// How it moves does: with the camera. An effect's light that keeps its place
+// before the camera while the camera moves (ParticleLightState::attached)
+// within kViewModelReach of the eye is brought nearer the eye by `depth`
+// along its line of sight. (So is the glow of a thing the player carries
+// that near.)
+struct ViewModelDepth {
+  float eye[3], forward[3], depth;
+  float axes[3][3]; // the camera's right, up and forward
+};
+std::unordered_map<uint64_t, ViewModelDepth> g_viewModelDepths;
+ViewModelDepth g_viewModelFirst; // a view model view of the frame; depth 0: none
+constexpr float kViewModelReach = 128;
 std::vector<ParticlePiece> g_particlePieces;
 constexpr size_t kParticlePieceLimit = 4096;
 constexpr float kParticleLightPower = 12;
@@ -4355,6 +4381,11 @@ struct ParticleLightState {
   uint64_t lastFrame = 0;
   uint64_t since = 0; // tick it began to glow at
   uint64_t id = 0;
+  // Where its effect was the frame before, in the world and before the
+  // camera (right, up, ahead), and how far it is taken to go with the camera
+  // (0 to 1; see ViewModelDepth).
+  float raw[3] = {}, before[3] = {}, attached = 0;
+  bool beforeKnown = false;
 };
 std::vector<ParticleLightState> g_particleLights;
 uint64_t g_particleLightIds = 0;
@@ -4431,7 +4462,7 @@ bool lightingParticle(bool selfLit) {
 // texture's mean colour (linear) times its coverage; `gain`: what the stored
 // colours were divided by; `toWorld`: the vertices' space to world, or null.
 void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, const std::vector<uint32_t> &indices,
-                         const float texture[3], float gain, const float (*toWorld)[4]) {
+                         const float texture[3], float gain, const float (*toWorld)[4], uint64_t view) {
   // Whether the triangle before this one made a piece that waits for its
   // quad's other half, and its area.
   bool paired = false;
@@ -4496,6 +4527,8 @@ void gatherParticleLight(const std::vector<remixapi_HardcodedVertex> &vertices, 
     // (Half the side of the quad it is half of, until its other half comes.)
     piece.reach = .5f * std::sqrt(2 * area);
     piece.draw = draw;
+    piece.view = view;
+    piece.placed = false;
     for (int k = 0; k < 3; ++k)
       piece.power[k] = colour[k] * gain * alpha * texture[k] * area;
     g_particlePieces.push_back(piece);
@@ -5186,7 +5219,7 @@ bool submitParticles(const Draw &d, ParticleKind kind, uint64_t viewKey, const f
       // shows it by its coverage.
       for (int k = 0; k < 3; ++k)
         texture[k] = std::pow(std::max(mean[k], 0.f), 2.2f) * (additive ? 1.f : mean[3]);
-      gatherParticleLight(vertices, indices, texture, float(result.gain), cameraToWorld);
+      gatherParticleLight(vertices, indices, texture, float(result.gain), cameraToWorld, viewKey);
       ++g_stats.particleLightDraws;
     }
     // Not what glows by itself though it blends as smoke does (fire: dim in a
@@ -8262,6 +8295,27 @@ void onPresent() {
       }
       roles[key] = role;
     }
+    g_viewModelDepths.clear();
+    g_viewModelFirst = {};
+    uint32_t viewModelFirstDraws = 0;
+    for (auto &[key, v] : g_views)
+      if (roles[key] == Role::ViewModel && v.projection[0] > main->projection[0] && main->projection[0] > 0) {
+        // (Views as stored: right, up and forward in the columns.)
+        ViewModelDepth depth = {};
+        for (int i = 0; i < 3; ++i) {
+          depth.eye[i] = -(v.view[12] * v.view[i * 4] + v.view[13] * v.view[i * 4 + 1] + v.view[14] * v.view[i * 4 + 2]);
+          depth.forward[i] = v.view[i * 4 + 2];
+        }
+        for (int a = 0; a < 3; ++a)
+          for (int i = 0; i < 3; ++i)
+            depth.axes[a][i] = v.view[i * 4 + a];
+        depth.depth = main->projection[0] / v.projection[0];
+        g_viewModelDepths[key] = depth;
+        if (g_viewModelFirst.depth == 0 || v.draws > viewModelFirstDraws) {
+          g_viewModelFirst = depth;
+          viewModelFirstDraws = v.draws;
+        }
+      }
     if (sky)
       ++g_stats.skyFrames;
     g_viewSummary.clear();
@@ -8988,9 +9042,24 @@ void onPresent() {
       const uint64_t now = GetTickCount64();
       struct Effect {
         double power[3] = {}, position[3] = {}, weight = 0, spread = 0;
+        bool placed = false;
       };
       std::vector<Effect> effects;
       {
+        // A view model's pieces to where they look to be (ViewModelDepth).
+        for (auto &piece : g_particlePieces) {
+          const auto found = g_viewModelDepths.find(piece.view);
+          if (found == g_viewModelDepths.end())
+            continue;
+          const ViewModelDepth &d = found->second;
+          piece.placed = true;
+          ++g_stats.particleLightViewModel;
+          float ahead = 0;
+          for (int k = 0; k < 3; ++k)
+            ahead += (piece.centre[k] - d.eye[k]) * d.forward[k];
+          for (int k = 0; k < 3; ++k)
+            piece.centre[k] -= d.forward[k] * ahead * (1 - d.depth);
+        }
         // Union-find over the pieces; neighbours through a grid of cells no
         // smaller than a piece's reach (larger pieces reach as far as a cell).
         const auto &pieces = g_particlePieces;
@@ -9049,6 +9118,7 @@ void onPresent() {
             e.power[k] += pieces[i].power[k];
             e.position[k] += pieces[i].centre[k] * weight;
           }
+          e.placed |= pieces[i].placed;
           e.weight += weight;
         }
         // An effect's extent: its pieces' mean distance from its centre
@@ -9076,14 +9146,31 @@ void onPresent() {
           continue;
         const float at[3] = {float(e.position[0]), float(e.position[1]), float(e.position[2])};
         const float extent = float(e.spread);
+        // Before the camera (where the frame has a view model).
+        const ViewModelDepth &camera = g_viewModelFirst;
+        const bool held = camera.depth > 0;
+        float before[3] = {}, fromEye[3] = {}, eyeDistance = 0;
+        for (int k = 0; k < 3; ++k) {
+          fromEye[k] = at[k] - camera.eye[k];
+          eyeDistance += fromEye[k] * fromEye[k];
+        }
+        eyeDistance = std::sqrt(eyeDistance);
+        for (int a = 0; a < 3; ++a)
+          before[a] = fromEye[0] * camera.axes[a][0] + fromEye[1] * camera.axes[a][1] + fromEye[2] * camera.axes[a][2];
+        auto apart = [](const float *a, const float *b) {
+          const float d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+          return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        };
         size_t best = ~size_t(0);
         float bestDistance = 0;
         for (size_t i = 0; i < taken.size(); ++i) {
           if (taken[i])
             continue;
           const auto &light = g_particleLights[i];
-          const float d[3] = {light.position[0] - at[0], light.position[1] - at[1], light.position[2] - at[2]};
-          const float distance = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+          // (What goes with the camera is found again before the camera: a
+          // turn takes it far in the world in a frame.)
+          const float distance = held && light.beforeKnown && light.attached > .5f ? apart(light.before, before)
+                                                                                 : apart(light.raw, at);
           if (distance < std::max({light.extent, extent, 8.f}) && (best == ~size_t(0) || distance < bestDistance)) {
             best = i;
             bestDistance = distance;
@@ -9099,9 +9186,32 @@ void onPresent() {
         taken[best] = true;
         auto &light = g_particleLights[best];
         const float blend = light.lastFrame == 0 ? 1.f : kBlend;
+        // Whether it goes with the camera: it moved in the world and not
+        // before the camera, or the other way about.
+        if (held && light.beforeKnown && light.lastFrame + 1 == g_frame) {
+          const float world = apart(light.raw, at), view = apart(light.before, before);
+          if (std::max(world, view) > .25f) {
+            if (view < .35f * world)
+              light.attached += (1 - light.attached) * .5f;
+            else if (world < .35f * view)
+              light.attached *= .5f;
+          }
+        }
+        std::memcpy(light.raw, at, sizeof(at));
+        std::memcpy(light.before, before, sizeof(before));
+        light.beforeKnown = held;
+        float target[3] = {at[0], at[1], at[2]};
+        bool rigid = false;
+        if (held && !e.placed && light.attached > .01f && eyeDistance < kViewModelReach) {
+          const float nearer = 1 + (camera.depth - 1) * light.attached;
+          for (int k = 0; k < 3; ++k)
+            target[k] = camera.eye[k] + fromEye[k] * nearer;
+          rigid = light.attached > .5f; // not trailing the camera
+          ++g_stats.particleLightViewModel;
+        }
         for (int k = 0; k < 3; ++k) {
           light.power[k] += (float(e.power[k]) - light.power[k]) * blend;
-          light.position[k] += (at[k] - light.position[k]) * blend;
+          light.position[k] += (target[k] - light.position[k]) * (rigid ? 1.f : blend);
         }
         light.extent += (extent - light.extent) * blend;
         // A sphere a fraction of the effect's extent, and small: a flame on
@@ -10719,6 +10829,8 @@ void dumpStatistics(FILE *out) {
           g_stats.particleLights.exchange(0) / f, g_stats.particleLightDraws.exchange(0) / f,
           g_stats.particleLightWeak.exchange(0) / f, g_stats.particleLightYoung.exchange(0) / f,
           g_stats.particleLightLit.exchange(0) / f);
+  fprintf(out, "   glowing sprites per frame drawn in a view model view, and lights that go with the camera (brought to where they look to be): %.1f\n",
+          g_stats.particleLightViewModel.exchange(0) / f);
   fprintf(out, "   alpha-blended particle draws per frame lit by the traced scene: %.1f\n",
           g_stats.particleLit.exchange(0) / f);
   fprintf(out, "   alpha-blended particle draws per frame left unlit (they glow by themselves: $addself, overbright): %.1f\n",
