@@ -42,8 +42,7 @@ struct Light {
   // Dynamic lights: no stronger within holdDistance than at it, and nothing
   // past fadeRange (SourceLight's). 0: none.
   float holdDistance = 0, fadeRange = 0;
-  // Nothing nearer than this shadows it (SourceLight's): a dynamic light's
-  // carrier, a projected texture's near plane.
+  // Dynamic lights: nothing nearer than this shadows it (SourceLight's).
   float shadowClearance = 0;
   // Projected textures: the cookie's texture name (as materials name theirs)
   // and frame (animated textures), the projection's up vector and horizontal
