@@ -345,8 +345,11 @@ bool fromDLight(const DLight &d, Light &l) {
 // tracer's. The game's shadow depth sees nothing nearer than m_NearZ, and a
 // lamp tool's projection starts within its lamp's model (nearz 12), all but
 // the default one of which closed the traced light in: the light stands
-// m_NearZ along its direction from the projection's origin (no more than a
-// quarter of m_FarZ), on the near plane and out of the model.
+// m_NearZ along its direction from the projection's origin (Light::forward;
+// no more than a quarter of m_FarZ), on the near plane and out of the model.
+// Not the player's own flashlight, which the game draws back from a wall
+// near before him, the near plane kept where it was, for the spot to stay
+// wide: that one stays at its origin (remix_output.cpp, which has the eye).
 // OPENREMIX_PROXY_PROJECTED_SCALE scales the brightness. Portal 2's
 // shaders scale by r_flashlightbrightness (0.25, its default) and the state's
 // m_fBrightnessScale (env_projectedtexture's brightnessscale) as well.
@@ -387,9 +390,7 @@ bool fromProjected(const FlashlightState &s, Light &l) {
   l.phiDot = std::cos(outer);
   l.thetaDot = std::cos(outer * 0.5f);
   if (s.nearZ > 0 && std::isfinite(s.nearZ)) {
-    const float forward = std::min(s.nearZ, s.farZ * 0.25f);
-    for (int i = 0; i < 3; ++i)
-      l.position[i] += l.direction[i] * forward;
+    l.forward = std::min(s.nearZ, s.farZ * 0.25f);
   }
   return true;
 }
@@ -405,7 +406,7 @@ bool sameLights(const std::vector<Light> &a, const std::vector<Light> &b) {
         !floats(x.position, y.position, 3) || !floats(x.direction, y.direction, 3) ||
         !floats(x.attenuation, y.attenuation, 3) || x.thetaDot != y.thetaDot || x.phiDot != y.phiDot ||
         !floats(x.up, y.up, 3) || x.fov != y.fov || x.holdDistance != y.holdDistance ||
-        x.fadeRange != y.fadeRange || x.shadowClearance != y.shadowClearance)
+        x.fadeRange != y.fadeRange || x.shadowClearance != y.shadowClearance || x.forward != y.forward)
       return false;
   }
   return true;

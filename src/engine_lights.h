@@ -44,6 +44,10 @@ struct Light {
   float holdDistance = 0, fadeRange = 0;
   // Dynamic lights: nothing nearer than this shadows it (SourceLight's).
   float shadowClearance = 0;
+  // Projected textures: how far along its direction the light stands from
+  // `position`, the projection's origin (its near plane), but for the
+  // viewer's own flashlight.
+  float forward = 0;
   // Projected textures: the cookie's texture name (as materials name theirs)
   // and frame (animated textures), the projection's up vector and horizontal
   // field of view in degrees.

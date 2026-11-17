@@ -9017,6 +9017,22 @@ void onPresent() {
           l.holdDistance = e.holdDistance;
           l.fadeRange = e.fadeRange;
           l.shadowClearance = e.shadowClearance;
+          // A projected texture's light on its near plane (out of a lamp's
+          // model; engine_lights.cpp), unless that is by the eye and it looks
+          // the camera's way: the player's flashlight, drawn back from a
+          // wall near before him.
+          if (e.forward > 0 && main) {
+            float plane[3], apart = 0, along = 0;
+            for (int k = 0; k < 3; ++k) {
+              plane[k] = e.position[k] + e.direction[k] * e.forward;
+              const float eye = -(main->view[12] * main->view[k * 4] + main->view[13] * main->view[k * 4 + 1] +
+                                  main->view[14] * main->view[k * 4 + 2]);
+              apart += (plane[k] - eye) * (plane[k] - eye);
+              along += e.direction[k] * main->view[k * 4 + 2];
+            }
+            if (!(apart < 48 * 48 && std::abs(along) > .9f))
+              std::memcpy(l.position, plane, 12);
+          }
           // The cookie once the runtime has its texture (until then a cone;
           // the definition changes when it arrives).
           if (!e.cookie.empty())
