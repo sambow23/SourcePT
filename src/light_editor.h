@@ -13,7 +13,12 @@
 //  * Saved per map to garrysmod/data/openremix/lights/<map>.txt (the game
 //    root's openremix/lights in other games), and loaded with the map.
 //
-// Everything but takeCommand runs on the thread that presents (the light
+// Above the lights, the tab (named "Garry's Mod" where the runtime lets a
+// plugin name it, and "Plugin" in older ones) holds the wrapper's options:
+// particleLights. They are saved as they change, to openremix/options.txt
+// beside the lights directory.
+//
+// Everything but takeCommand and particleLights runs on the thread that presents (the light
 // submission and the runtime's UI callbacks).
 #include "source_lights.h"
 
@@ -40,6 +45,11 @@ void setCamera(const float view[16], const float projection[16]);
 // when none. teleportAvailable: whether anything runs them.
 bool takeCommand(std::string &command);
 void setTeleportAvailable(bool available);
+
+// Any thread: whether glowing particles light the scene (remix_output's
+// particle lights). The tab's option, on unless it was saved off;
+// OPENREMIX_PROXY_PARTICLE_LIGHTS=0 turns them off whatever it says.
+bool particleLights();
 
 // Statistics thread: the editor's state (shaderapi_proxy_slots.txt).
 void dumpStatistics(FILE *out);

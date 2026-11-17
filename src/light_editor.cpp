@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -55,6 +56,7 @@ struct ImGuiApi {
   int (*isMouseClicked)(int) = nullptr;
   int (*isAnyWindowHovered)() = nullptr;
   void (*setScrollHereY)(float) = nullptr;
+  void (*setDrawTitle)(const char *) = nullptr; // newer runtimes'
 
   bool load(HMODULE runtime) {
     bool ok = true;
@@ -92,7 +94,9 @@ struct ImGuiApi {
     get(isMouseClicked, "remixapi_imgui_IsMouseClicked");
     get(isAnyWindowHovered, "remixapi_imgui_IsAnyWindowHovered");
     get(setScrollHereY, "remixapi_imgui_SetScrollHereY");
-    return ok;
+    const bool required = ok;
+    get(setDrawTitle, "remixapi_imgui_SetDrawCallbackTitle");
+    return required;
   }
 } g_ui;
 
@@ -171,6 +175,54 @@ std::filesystem::path lightsDirectory() {
   if (std::filesystem::is_directory(root / L"garrysmod", ec))
     return root / L"garrysmod" / L"data" / L"openremix" / L"lights";
   return root / L"openremix" / L"lights";
+}
+
+// ---- the wrapper's options ----
+// "openremix-wrapper-options 1", then a line per option: name value.
+std::atomic<bool> g_particleLights{true};
+std::once_flag g_optionsRead;
+bool g_particleLightsForcedOff = false;
+std::filesystem::path optionsFile() { return lightsDirectory().parent_path() / L"options.txt"; }
+void readOptions() {
+  std::call_once(g_optionsRead, [] {
+    char v[8] = {};
+    g_particleLightsForcedOff = GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLE_LIGHTS", v, sizeof(v)) && v[0] == '0';
+    FILE *f = _wfopen(optionsFile().c_str(), L"r");
+    if (!f)
+      return;
+    char line[256], name[64];
+    int value = 0;
+    while (std::fgets(line, sizeof(line), f))
+      if (std::sscanf(line, "%63s %d", name, &value) == 2 && std::strcmp(name, "particle_lights") == 0)
+        g_particleLights = value != 0;
+    std::fclose(f);
+  });
+}
+bool saveOptions() {
+  const auto path = optionsFile();
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  FILE *f = _wfopen(path.c_str(), L"w");
+  if (!f)
+    return false;
+  std::fprintf(f, "openremix-wrapper-options 1\nparticle_lights %d\n", g_particleLights.load() ? 1 : 0);
+  std::fclose(f);
+  return true;
+}
+void drawOptions() {
+  readOptions();
+  int particleLights = g_particleLights.load() && !g_particleLightsForcedOff;
+  if (g_ui.checkbox("Particle lights", &particleLights) && !g_particleLightsForcedOff) {
+    g_particleLights = particleLights != 0;
+    if (!saveOptions())
+      g_status = "could not write " + optionsFile().string();
+  }
+  if (g_ui.isItemHovered(0))
+    g_ui.setTooltip(g_particleLightsForcedOff
+                        ? "Off by OPENREMIX_PROXY_PARTICLE_LIGHTS=0 in the environment."
+                        : "Fire, glows and other particles that shine by themselves light the scene\n"
+                          "(a light per effect). Off: only the map's and the engine's lights do.");
+  g_ui.separator();
 }
 
 std::filesystem::path mapFile(const std::string &map) {
@@ -451,6 +503,7 @@ void drawControls(Entry &e) {
 
 void drawPanel(void *) {
   std::lock_guard<std::mutex> lock(g_lock);
+  drawOptions();
   if (g_map.empty() || g_entries.empty()) {
     g_ui.textWrapped("Map lights: no map with lights is loaded (the BSP world provides them).");
     return;
@@ -590,10 +643,17 @@ void sync(float lightScale, float sunScale) {
       g_uiState = "the runtime lacks the ImGui plugin exports";
       return;
     }
+    if (g_ui.setDrawTitle)
+      g_ui.setDrawTitle("Garry's Mod");
     g_ui.registerDraw(&drawPanel, nullptr);
     g_ui.registerOverlay(&drawOverlay, nullptr);
     g_uiState = "registered";
   }
+}
+
+bool particleLights() {
+  readOptions();
+  return g_particleLights.load(std::memory_order_relaxed) && !g_particleLightsForcedOff;
 }
 
 bool edited(uint64_t hash, LightParams &out, uint64_t &revision) {

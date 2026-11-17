@@ -4334,7 +4334,9 @@ std::atomic<uint32_t> g_usParticles{0};
 //             glow sprite of a lamp, a fire the mapper put a light by).
 // Nothing within its glow shadows a particle light (the runtime's shadow
 // clearance): _PARTICLE_LIGHT_CLEARANCE caps that distance (32 units).
-// OPENREMIX_PROXY_PARTICLE_LIGHTS=0 turns them off; _PARTICLE_LIGHT_SCALE
+// The plugin tab's "Particle lights" turns them off and on
+// (light_editor::particleLights), and OPENREMIX_PROXY_PARTICLE_LIGHTS=0 off
+// whatever that says; _PARTICLE_LIGHT_SCALE
 // scales them; _PARTICLE_LIGHT_NAMES / _PARTICLE_LIGHT_SKIP name materials
 // (parts of their paths, ';'-separated) that light or do not whatever the
 // above says.
@@ -4389,13 +4391,8 @@ struct ParticleLightState {
 };
 std::vector<ParticleLightState> g_particleLights;
 uint64_t g_particleLightIds = 0;
-bool particleLightsEnabled() {
-  static const bool enabled = [] {
-    char v[8] = {};
-    return !(GetEnvironmentVariableA("OPENREMIX_PROXY_PARTICLE_LIGHTS", v, sizeof(v)) && v[0] == '0');
-  }();
-  return enabled;
-}
+// (The plugin tab's option; it may change from one frame to the next.)
+bool particleLightsEnabled() { return light_editor::particleLights(); }
 // Whether a material's path holds one of an environment variable's parts
 // (';'-separated, lower case compared).
 bool particleNamed(const char *variable, std::vector<std::string> &parts, bool &read, const char *material) {
@@ -9304,6 +9301,10 @@ void onPresent() {
         g_lightDefinitions[hash] = fnv(definition, sizeof(definition)) | 1;
         ++g_stats.particleLights;
       }
+    } else {
+      // Turned off (the plugin tab's option): none kept for when they are on again.
+      g_particlePieces.clear();
+      g_particleLights.clear();
     }
     for (auto &[hash, l] : g_frameLights) {
       auto &cached = g_lights[hash];
