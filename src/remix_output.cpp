@@ -149,6 +149,7 @@ struct Stats {
 #else
       decalVertexColors{0}, decalModulateFade{0}, decalOtherBlend{0}, decalNotItsBlend{0}, decalNoMesh{0};
 #endif
+  std::atomic<uint32_t> decalClamped{0}; // decal draws sampled clamped (a model's)
   std::atomic<uint32_t> decalAdditivePaint{0}; // lit $decal $additive draws painted as alpha decals
   // Winding of the meshes built with vertex normals under D3DCULL_CCW: their
   // first triangle's e1 x e2 along / against its vertex normals (since launch).
@@ -1174,6 +1175,12 @@ uint64_t maskTextureHash(const std::string &name, bool count = true, uint32_t fr
     }
   g_stats.emissiveMaskNotUploaded += count;
   return 0;
+}
+
+// Whether a sampler clamps (or borders) both ways.
+bool clampedSampler(const DWORD (*samplerStates)[16], uint32_t sampler) {
+  const DWORD u = samplerStates[sampler][D3DSAMP_ADDRESSU], v = samplerStates[sampler][D3DSAMP_ADDRESSV];
+  return (u == D3DTADDRESS_CLAMP || u == D3DTADDRESS_BORDER) && (v == D3DTADDRESS_CLAMP || v == D3DTADDRESS_BORDER);
 }
 
 // The texture's material sampled clamp-to-edge: an iris is projected onto the
@@ -7384,6 +7391,16 @@ void onDraw(const Draw &d) {
     ++(inst.material ? g_stats.cableDraws : g_stats.cableNoBase);
   } else {
     inst.material = d.texture0 ? materialFor(d.texture0, shading, nearest) : nullptr;
+    // A decal sampled clamped stays so: a model's decal is drawn on the
+    // model's own triangles about it, unclipped, the texture's border (its
+    // CLAMPS and CLAMPT flags) painting nothing over the rest; sampled
+    // repeating, a bullet hole was over the whole door.
+    if (lifted && d.texture0 && clampedSampler(d.samplerStates, 0)) {
+      if (const remixapi_MaterialHandle clamped = clampedMaterialFor(d.texture0, nearest)) {
+        inst.material = clamped;
+        ++g_stats.decalClamped;
+      }
+    }
 #endif
   }
 #ifdef PROXY_GAME_L4D2
@@ -10723,6 +10740,7 @@ void dumpStatistics(FILE *out) {
             g_stats.decalOtherBlend.exchange(0) / f,
             g_stats.decalNotItsBlend.exchange(0) / f, g_stats.decalNoMesh.exchange(0) / f,
             g_stats.decalModulateFade.exchange(0) / f, along, against, faceNormalSign(D3DCULL_CCW));
+    fprintf(out, "   decal draws sampled clamped (their texture does not repeat): %.1f\n", g_stats.decalClamped.exchange(0) / f);
     std::lock_guard<std::mutex> lock(g_transientSampleLock);
     std::vector<const std::pair<const std::string, DecalSeen> *> order;
     for (const auto &item : g_decalsSeen)
