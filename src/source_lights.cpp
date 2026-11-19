@@ -87,8 +87,8 @@ remixapi_LightHandle createLight(remixapi_Interface &api, const SourceLight &lig
                                                  std::max(params.shadowClearance, light.shadowClearance)};
   remixapi_LightInfoBakingEXT baking{REMIXAPI_STRUCT_TYPE_LIGHT_BAKING_EXT, nullptr,
                                     REMIXAPI_LIGHT_BAKING_PREFER_BAKED_EXT};
-  remixapi_LightInfoFalloffEXT falloff{REMIXAPI_STRUCT_TYPE_LIGHT_INFO_FALLOFF_EXT, nullptr, light.holdDistance,
-                                       light.fadeRange};
+  remixapi_LightInfoFalloffEXT falloff{REMIXAPI_STRUCT_TYPE_LIGHT_INFO_FALLOFF_EXT, nullptr, light.holdDistance};
+  remixapi_LightInfoRangeEXT range{REMIXAPI_STRUCT_TYPE_LIGHT_INFO_RANGE_EXT, nullptr, light.fadeRange};
   remixapi_LightInfoCookieEXT cookie = {};
   wchar_t cookiePath[32] = {};
   remixapi_LightInfoDistantEXT distant = {};
@@ -133,10 +133,13 @@ remixapi_LightHandle createLight(remixapi_Interface &api, const SourceLight &lig
       clearance.pNext = sphere.pNext;
       sphere.pNext = &clearance;
     }
-    if ((light.holdDistance > 0 || light.fadeRange > 0) && std::isfinite(light.holdDistance) &&
-        std::isfinite(light.fadeRange) && light.holdDistance >= 0 && light.fadeRange >= 0) {
+    if (light.holdDistance > 0 && std::isfinite(light.holdDistance)) {
       falloff.pNext = sphere.pNext;
       sphere.pNext = &falloff;
+    }
+    if (light.fadeRange > 0 && std::isfinite(light.fadeRange)) {
+      range.pNext = sphere.pNext;
+      sphere.pNext = &range;
     }
     info.pNext = &sphere;
   }
