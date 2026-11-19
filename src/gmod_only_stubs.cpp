@@ -44,8 +44,8 @@ void install() {}
 void dumpStatistics(FILE *) {}
 } // namespace proxy::engine_mirrors
 
-// Portal 2 and Entropy : Zero 2 build engine_lights themselves.
-#if !defined(PROXY_GAME_PORTAL2) && !defined(PROXY_GAME_EZ2)
+// Portal 2, Entropy : Zero 2, and Fistful of Frags build engine_lights themselves.
+#if !defined(PROXY_GAME_PORTAL2) && !defined(PROXY_GAME_EZ2) && !defined(PROXY_GAME_FOF)
 namespace proxy::engine_lights {
 bool install() { return false; }
 void sample() {}

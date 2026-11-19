@@ -180,7 +180,11 @@ constexpr size_t kSubRectPageOffset = 0x4, kSubRectNameOffset = 0x10;
 #else
 constexpr size_t kSubRectPageOffset = 0x4, kSubRectNameOffset = 0xc;
 #endif
+#ifdef PROXY_GAME_FOF
+constexpr size_t kMaterialCount = 0x22, kMaterialParams = 0x38, kMaterialName = 0x18, kMaterialShader = 0x14;
+#else
 constexpr size_t kMaterialCount = 0x22, kMaterialParams = 0x24, kMaterialName = 0x18, kMaterialShader = 0x14;
+#endif
 constexpr size_t kVarType = 0x1c, kVarTexture = 0x24;
 #endif
 #endif
@@ -900,6 +904,33 @@ constexpr Code kCode = {
     // add ecx,0xc (its name symbol); jmp CUtlSymbol::String
     "83 C1 0C E9",
     // mov eax,[ecx+4] (the page)
+    "8B 41 04 C3",
+};
+#elif defined(PROXY_GAME_FOF)
+// Fistful of Frags: the getters ask slot 143 (call [eax+0x23c]); m_pMaterial is at 0x2b38, GetShaderParams at +0x38.
+#define VAR_GETTER(tail)                                                                                              \
+  "56 8B F1 8B 0D ? ? ? ? 8B 01 FF 90 3C 02 00 00 85 C0 74 2C F6 46 1C 80 75 26 8A 46 1D 3C FF 74 1F 8B 0D ? ? ? ? " \
+  "0F B6 C0 8D 04 80 8D 34 C5 ? ? ? ? 8B 01 FF 90 3C 02 00 00 85 C0 75 D4 " tail
+constexpr Code kCode = {
+    "55 8B EC 53 8B D9 57 8B 7D 08 8B 8B 38 2B 00 00 85 C9 74 ? 85 FF 74 ? 8B 01 8B 40 1C FF D0 84 C0 74 ? 8B 07 "
+    "8B CF 8B 40 1C FF D0 84 C0 74 ? 8B 8B 38 2B 00 00 56 8B 01 FF 50 28 8B 17 8B CF 8B F0 FF 52 28 3B F0 5E 0F "
+    "95 C0 EB ? 8B 8B 38 2B 00 00 3B CF 75",
+    "8B 03 8B CB FF 90 C8 01 00 00 89 BB 38 2B 00 00 5F 5B 5D C2 04 00", 0x77,
+    "83 C1 18 E9",
+    "0F B6 41 22 C3",
+    "8B 41 38 C3",
+    "56 8B F1 6A 00 6A 00 6A 00 8B 06 6A 00 FF 90 FC 00 00 00 8B 4E 14 5E 85 C9 74 04 8B 01 FF 20",
+    "56 0F B7 71 1E B8 FF FF 00 00 66 3B F0",
+    "8A 49 1C 33 C0 80 E1 0F 80 F9 06 0F 95 C0 C3",
+    VAR_GETTER("8B 46 08 5E C3"),
+    VAR_GETTER("D9 46 0C 5E C3"),
+    VAR_GETTER("8D 46 0C 5E C3"),
+    "55 8B EC 83 EC 08 53 8B D9 8B 0D ? ? ? ? 56 57 8B 01 FF 90 3C 02 00 00 85 C0 74 2F 8D 49 00 F6 43 1C 80 75 26 8A "
+    "43 1D 3C FF 74 1F 8B 0D ? ? ? ? 0F B6 C0 8D 04 80 8D 1C C5 ? ? ? ? 8B 01 FF 90 3C 02 00 00 85 C0 75 D4 0F B6 43 "
+    "1C 83 E0 0F 83 F8 08 0F 87 ? ? ? ? FF 24 85",
+    "8B 43 04 5F 5E 5B 8B E5 5D C3",
+    "8B 4B 24 83 F9 FF 75 0C 5F 5E B8 ? ? ? ? 5B 8B E5 5D C3 8B 01 FF 10",
+    "83 C1 0C E9",
     "8B 41 04 C3",
 };
 #endif

@@ -240,7 +240,7 @@ void addContentMounts() {
   }
 }
 
-#if defined(PROXY_GAME_HL2RTX) || defined(PROXY_GAME_TF2) || defined(PROXY_GAME_EZ2)
+#if defined(PROXY_GAME_HL2RTX) || defined(PROXY_GAME_TF2) || defined(PROXY_GAME_EZ2) || defined(PROXY_GAME_FOF)
 // A "directory/*" search path: its subdirectories loose and its packages
 // (<name>_dir.vpk), in alphabetical order as the engine mounts them.
 void addEach(const std::wstring &directory) {
@@ -427,6 +427,18 @@ void index() {
   addLoose(g_root + L"\\" + L"episodic");
   addLoose(g_root + L"\\" + L"hl2");
   addLoose(g_root + L"\\" + L"platform");
+#elif defined(PROXY_GAME_FOF)
+  // Fistful of Frags: hl2.exe sits in sdk\, while fof\ is beside sdk\ (..\fof).
+  addEach(L"..\\fof\\custom");
+  addVpk(g_root + L"\\..\\fof\\fof_new_materials_dir.vpk");
+  addVpk(g_root + L"\\..\\fof\\fof2_dir.vpk");
+  addVpk(g_root + L"\\..\\fof\\fof_dir.vpk");
+  addLoose(g_root + L"\\..\\fof");
+  for (const wchar_t *vpk : {L"hl2_textures", L"hl2_misc"})
+    addVpk(g_root + L"\\" + std::wstring(L"hl2\\") + vpk + L"_dir.vpk");
+  addVpk(g_root + L"\\" + L"platform\\platform_misc_dir.vpk");
+  addLoose(g_root + L"\\hl2");
+  addLoose(g_root + L"\\platform");
 #endif
 }
 

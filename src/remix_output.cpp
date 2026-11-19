@@ -3992,13 +3992,15 @@ void applySkyDome() {
   light.pNext = &dome;
   light.hash = 0x5b7d0e0000000001ull;
   light.radiance = {domeScale, domeScale, domeScale};
+  if (g_skyDome) {
+    g_api.DestroyLight(g_skyDome);
+    g_skyDome = nullptr;
+  }
   remixapi_LightHandle handle = nullptr;
   if (g_api.CreateLight(&light, &handle) != REMIXAPI_ERROR_CODE_SUCCESS) {
     g_api.DestroyTexture(texture);
     return;
   }
-  if (g_skyDome && g_skyDome != handle)
-    g_api.DestroyLight(g_skyDome);
   if (g_skyTexture && g_skyTexture != texture)
     g_api.DestroyTexture(g_skyTexture);
   g_skyDome = handle;

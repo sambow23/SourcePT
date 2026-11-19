@@ -30,6 +30,9 @@ endif
 if game == 'portal2' and cpu != 'x86'
   error('the Portal 2 proxy is a 32-bit DLL: configure with cross/i686-w64-mingw32.txt')
 endif
+if game == 'fof' and cpu != 'x86'
+  error('the Fistful of Frags proxy is a 32-bit DLL: configure with cross/i686-w64-mingw32.txt')
+endif
 
 remix_inc = get_option('openremix_include')
 if remix_inc == ''
@@ -115,6 +118,11 @@ else
     # Entropy : Zero 2 (src/ez2_engine.cpp).
     cpp_args += '-DPROXY_GAME_EZ2'
     sources += ['src/ez2_engine.cpp']
+    def_file = 'shaderapidx9_hl2rtx.def'
+  elif game == 'fof'
+    # Fistful of Frags (src/fof_engine.cpp).
+    cpp_args += '-DPROXY_GAME_FOF'
+    sources += ['src/fof_engine.cpp']
     def_file = 'shaderapidx9_hl2rtx.def'
   endif
 endif

@@ -21,7 +21,7 @@
 #endif
 #ifdef PROXY_GAME_L4D2
 #include "slots_shaderapi_l4d2.h"
-#elif defined(PROXY_GAME_HL2RTX) || defined(PROXY_GAME_EZ2)
+#elif defined(PROXY_GAME_HL2RTX) || defined(PROXY_GAME_EZ2) || defined(PROXY_GAME_FOF)
 #include "slots_shaderapi_hl2rtx.h"
 #elif defined(PROXY_GAME_TF2)
 #include "slots_shaderapi_tf2.h"
@@ -134,7 +134,7 @@ void appendSwitch(const char *name) {
 }
 
 void forceSwitches() {
-#if defined(PROXY_GAME_GMOD) || defined(PROXY_GAME_HL2RTX) || defined(PROXY_GAME_TF2)
+#if defined(PROXY_GAME_GMOD) || defined(PROXY_GAME_HL2RTX) || defined(PROXY_GAME_TF2) || defined(PROXY_GAME_FOF)
   // The proxy hooks the original's import of d3d9!Direct3DCreate9 (TF2: its
   // GetProcAddress, d3d_hooks.h). Without -nod3d9ex the shader API asks
   // d3d9.dll for Direct3DCreate9Ex instead (by name, at run time) and creates
@@ -144,11 +144,12 @@ void forceSwitches() {
   // GetProcAddress(d3d9, "Direct3DCreate9Ex").)
   appendSwitch("-nod3d9ex");
 #endif
-#if defined(PROXY_GAME_L4D2) || defined(PROXY_GAME_TF2) || defined(PROXY_GAME_EZ2) || defined(PROXY_GAME_PORTAL2)
-  // L4D2 (l4d2-rtx's proxy saw the plain device without -nod3d9ex), TF2, EZ2
-  // and Portal 2 (its shader API imports only Direct3DCreate9): the proxy
-  // replaces a game module, patches engine code and hooks its vtables, which
-  // VAC must never see, so the game stays off VAC-secured servers.
+#if defined(PROXY_GAME_L4D2) || defined(PROXY_GAME_TF2) || defined(PROXY_GAME_EZ2) || defined(PROXY_GAME_PORTAL2) || \
+    defined(PROXY_GAME_FOF)
+  // L4D2 (l4d2-rtx's proxy saw the plain device without -nod3d9ex), TF2, EZ2,
+  // Portal 2 and Fistful of Frags: the proxy replaces a game module, patches
+  // engine code and hooks its vtables, which VAC must never see, so the game
+  // stays off VAC-secured servers.
   appendSwitch("-insecure");
 #endif
 }

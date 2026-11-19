@@ -13,9 +13,9 @@
 // engine branch, L4D2's close relative). What differs between them is named
 // here; the rest of the proxy reads these instead of literals.
 #if defined(PROXY_GAME_GMOD) + defined(PROXY_GAME_TF2) + defined(PROXY_GAME_L4D2) + defined(PROXY_GAME_HL2RTX) + \
-        defined(PROXY_GAME_EZ2) + defined(PROXY_GAME_PORTAL2) !=                                                    \
+        defined(PROXY_GAME_EZ2) + defined(PROXY_GAME_PORTAL2) + defined(PROXY_GAME_FOF) !=                        \
     1
-#error "define one of PROXY_GAME_GMOD, PROXY_GAME_TF2, PROXY_GAME_L4D2, PROXY_GAME_HL2RTX, PROXY_GAME_EZ2, PROXY_GAME_PORTAL2 (meson option game)"
+#error "define one of PROXY_GAME_GMOD, PROXY_GAME_TF2, PROXY_GAME_L4D2, PROXY_GAME_HL2RTX, PROXY_GAME_EZ2, PROXY_GAME_PORTAL2, PROXY_GAME_FOF (meson option game)"
 #endif
 #if defined(PROXY_GAME_GMOD) && !defined(_WIN64)
 #error "the Garry's Mod proxy is a 64-bit DLL"
@@ -34,6 +34,9 @@
 #endif
 #if defined(PROXY_GAME_PORTAL2) && defined(_WIN64)
 #error "the Portal 2 proxy is a 32-bit DLL"
+#endif
+#if defined(PROXY_GAME_FOF) && defined(_WIN64)
+#error "the Fistful of Frags proxy is a 32-bit DLL"
 #endif
 
 // The x86 engine side (x86_engine.h): Left 4 Dead 2's engine hooks, which
@@ -372,6 +375,41 @@ constexpr bool kSceneFogSlots = true;
 constexpr unsigned kRegFlexScale = 3;
 // Mapbase's game_shader_dx9 registers stock shaders with "SDK_<name>"
 constexpr char kShaderPrefix[] = "sdk_";
+
+// ISurface (vguimatsurface.dll) SetCursorAlwaysVisible(bool): VGUI_Surface030 slot 52
+constexpr char kSurfaceInterface[] = "VGUI_Surface030";
+constexpr unsigned kSlotSetCursorAlwaysVisible = 52;
+
+// The runtime: the x86 -> x64 bridge client beside the proxy (bin)
+constexpr wchar_t kRuntimePath[] = L"\\remix_bridge.dll";
+constexpr char kRuntimeLabel[] = "remix_bridge.dll";
+constexpr wchar_t kRuntimeModule[] = L"remix_bridge.dll";
+constexpr char kRuntimeName[] = "remix_bridge.dll";
+
+#elif defined(PROXY_GAME_FOF)
+
+constexpr bool kGMod = false;
+
+// Fistful of Frags (Steam app 265630): Source SDK 2013 Multiplayer (x86) with
+// stock stdshader_dx9 shaders.
+constexpr char kShaderApiInterface[] = "ShaderApi030";
+constexpr char kHardwareConfigInterface[] = "MaterialSystemHardwareConfig012";
+constexpr bool kHookVBAllocTracker = false;
+constexpr bool kFixedFunction = false;
+
+// IShaderAPIDX8 (ShaderApi030): SDK 2013 slot order, identical to HL2RTX/EZ2.
+constexpr unsigned kSlotSetLight = 126;
+constexpr bool kSetLightsArray = false;
+constexpr unsigned kSlotBind = 113;
+constexpr unsigned kSlotSetPIXMarker = 215;
+constexpr unsigned kSlotGetMatrix = 12;
+constexpr unsigned kSlotGetCurrentNumBones = 34;
+constexpr unsigned kSlotGetSceneFogMode = 4, kSlotGetSceneFogColor = 5, kSlotGetFogDistances = 212;
+constexpr bool kSceneFogSlots = true;
+
+constexpr unsigned kRegFlexScale = 3;
+// Stock stdshader_dx9 shaders (no SDK_ prefix on world/model shaders).
+constexpr char kShaderPrefix[] = "";
 
 // ISurface (vguimatsurface.dll) SetCursorAlwaysVisible(bool): VGUI_Surface030 slot 52
 constexpr char kSurfaceInterface[] = "VGUI_Surface030";
