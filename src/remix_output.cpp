@@ -2295,6 +2295,24 @@ void getMatrix(int mode, float *out) {
   reinterpret_cast<Fn>(vtbl[kSlotGetMatrix])(g_shaderApi, mode, out);
 }
 
+bool engineViewProjection(float out[16]) {
+  if (!g_shaderApi)
+    return false;
+  float view[16], projection[16];
+  getMatrix(kMatrixView, view);
+  getMatrix(kMatrixProjection, projection);
+  for (int r = 0; r < 4; ++r)
+    for (int c = 0; c < 4; ++c) {
+      float sum = 0;
+      for (int k = 0; k < 4; ++k)
+        sum += view[r * 4 + k] * projection[k * 4 + c];
+      if (!std::isfinite(sum))
+        return false;
+      out[r * 4 + c] = sum;
+    }
+  return true;
+}
+
 // Source's packed normal (UBYTE4, bytes 0-1; bytes 2-3 hold the tangent),
 // ported from UnpackNormal_UBYTE4 in public/mathlib/mathlib.h.
 void unpackNormalUByte4(const uint8_t *packed, float out[3]) {
@@ -4061,6 +4079,7 @@ struct CensusRow {
 };
 std::map<std::string, CensusRow> g_census; // under g_transientSampleLock
 
+bool currentViewProjection(float out[16]) { return engineViewProjection(out); }
 bool drawOfWorldOrStaticProp() { return g_worldLists > 0 || g_staticProps > 0; }
 
 bool drawIsPerspective() {

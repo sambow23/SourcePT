@@ -177,6 +177,9 @@ bool drawIsPerspective();
 // The engine is drawing world lists (IVRenderView::DrawWorldLists: the
 // world's surfaces) or static props, not entities (props, NPCs, doors...).
 bool drawOfWorldOrStaticProp();
+// The engine's current view times projection (its matrix stacks'; row
+// vectors, as D3D's). False without the engine's interface.
+bool currentViewProjection(float out[16]);
 void onPresent();
 // The game is shutting its renderer down: stop OpenRemix while every thread
 // is alive (exit-time teardown after ExitProcess hung on its workers).

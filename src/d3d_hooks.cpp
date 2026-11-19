@@ -1037,16 +1037,6 @@ struct OccluderBuffers {
   bool failed = false;
 } g_occluders;
 std::unordered_map<IDirect3DSurface9 *, uint64_t> g_occludersDrawn; // by target: frame
-// The target whose occluders wait for the open query's first draw, and the
-// view-projection (c8..c11) as the query began. The engine sets a draw's
-// constants as it draws: when a query begins they are the last draw's, which
-// may be of another projection (a view model's effect, a screen-space or
-// depth-hacked sprite, the last thing drawn before the view's queries), and
-// occluders drawn with it hid nothing: the map's glow sprites showed through
-// walls for as long as that effect was drawn. The query's own draw has the
-// view's.
-IDirect3DSurface9 *g_occludersPending = nullptr;
-float g_occludersPendingView[16] = {};
 
 bool occludersEnabled() {
   static const bool enabled = [] {
@@ -1575,18 +1565,35 @@ bool occludersReady(IDirect3DDevice9 *dev) {
   return true;
 }
 
-// Rasterizes the occluders' depth with the current view (vertex shader
-// constants c8..c11: the view-projection, one register per clip-space
-// component) and viewport; every other state is restored.
+// Rasterizes the occluders' depth with the current view and viewport; every
+// other state is restored. The view is the engine's own (its matrix stacks':
+// what the query's draws will be drawn with). The vertex shader constants
+// (c8..c11: the view-projection, one register per clip-space component) are
+// the last draw's, set as it was drawn: of another projection where the last
+// thing drawn before the view's queries was (a view model's effect, a
+// screen-space or depth-hacked sprite), and occluders drawn with that hid
+// nothing: the map's glow sprites showed through walls for as long as that
+// effect was drawn. They are the view only without the engine's interface.
 void drawOccluders(IDirect3DDevice9 *dev) {
   IDirect3DStateBlock9 *saved = nullptr;
   if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)))
     return;
-  D3DMATRIX projection = {}, identity = {};
+  D3DMATRIX projection = {}, identity = {}, engine = {};
   for (int r = 0; r < 4; ++r) {
     identity.m[r][r] = 1;
     for (int c = 0; c < 4; ++c)
       projection.m[r][c] = g_vsConstants[(8 + c) * 4 + r];
+  }
+  if (remix::currentViewProjection(&engine.m[0][0])) {
+    float apart = 0, size = 0;
+    for (int r = 0; r < 4; ++r)
+      for (int c = 0; c < 4; ++c) {
+        apart = std::max(apart, std::fabs(engine.m[r][c] - projection.m[r][c]));
+        size = std::max(size, std::fabs(engine.m[r][c]));
+      }
+    if (apart > 1e-3f * std::max(size, 1.f))
+      ++g_stats.occluderViewChanged;
+    projection = engine;
   }
   g_setVertexShader(dev, nullptr); // past the hook: the state block restores the shader, and its tracking would not see that
   dev->SetPixelShader(nullptr);
@@ -1642,50 +1649,28 @@ HRESULT STDMETHODCALLTYPE queryGetData(IDirect3DQuery9 *query, void *data, DWORD
 HRESULT STDMETHODCALLTYPE queryIssue(IDirect3DQuery9 *query, DWORD flags) {
   if (query->GetType() == D3DQUERYTYPE_OCCLUSION) {
     if (flags & D3DISSUE_BEGIN) {
-      // The first query of the frame on this target: its depth, drawn before
-      // the query's first draw (drawPendingOccluders).
-      if (g_openOcclusion.empty()) {
-        const auto drawn = g_occludersDrawn.find(g_renderTarget0);
-        if (drawn == g_occludersDrawn.end() || drawn->second != g_d3dFrame) {
-          g_occludersPending = g_renderTarget0;
-          std::memcpy(g_occludersPendingView, &g_vsConstants[8 * 4], sizeof(g_occludersPendingView));
+      // The first query of the frame on this target: its depth, unless
+      // another query is open (the occluders would count towards it).
+      IDirect3DDevice9 *dev = nullptr;
+      if (g_openOcclusion.empty() && SUCCEEDED(query->GetDevice(&dev))) {
+        uint64_t &drawn = g_occludersDrawn[g_renderTarget0];
+        if (drawn != g_d3dFrame && occludersReady(dev)) {
+          drawn = g_d3dFrame;
+          drawOccluders(dev);
         }
+        dev->Release();
       }
       g_openOcclusion.insert(query);
       g_queryTargets[g_renderTarget0] = g_d3dFrame;
       ++g_stats.occlusionQueries;
     }
-    else if (flags & D3DISSUE_END) {
+    else if (flags & D3DISSUE_END)
       g_openOcclusion.erase(query);
-      if (g_openOcclusion.empty())
-        g_occludersPending = nullptr;
-    }
   }
   const HRESULT hr = g_queryClasses.original<QueryIssueFn>(query, kQIssue)(query, flags);
   if (queryProfiling() && SUCCEEDED(hr) && (flags & D3DISSUE_END))
     g_queryProfile.issued(queryKind(query->GetType()));
   return hr;
-}
-
-// Before the first draw of the frame's first query on a target: the occluders,
-// with that draw's view. The open queries are ended for them and begun again
-// (the occluders would count towards them; nothing was drawn in them yet).
-void drawPendingOccluders(IDirect3DDevice9 *dev) {
-  IDirect3DSurface9 *const target = g_occludersPending;
-  g_occludersPending = nullptr;
-  if (target != g_renderTarget0 || g_openOcclusion.empty() || !occludersReady(dev))
-    return;
-  uint64_t &drawn = g_occludersDrawn[target];
-  if (drawn == g_d3dFrame)
-    return;
-  drawn = g_d3dFrame;
-  if (std::memcmp(g_occludersPendingView, &g_vsConstants[8 * 4], sizeof(g_occludersPendingView)))
-    ++g_stats.occluderViewChanged;
-  for (IDirect3DQuery9 *open : g_openOcclusion)
-    g_queryClasses.original<QueryIssueFn>(open, kQIssue)(open, D3DISSUE_END);
-  drawOccluders(dev);
-  for (IDirect3DQuery9 *open : g_openOcclusion)
-    g_queryClasses.original<QueryIssueFn>(open, kQIssue)(open, D3DISSUE_BEGIN);
 }
 
 // A depth clear takes the occluders with it: the engine clears depth between
@@ -2281,8 +2266,6 @@ HRESULT STDMETHODCALLTYPE drawIndexedPrimitive(IDirect3DDevice9 *dev, D3DPRIMITI
                                                UINT minIndex, UINT numVertices, UINT startIndex, UINT primCount) {
   ++g_stats.dip;
   g_stats.dipPrims += primCount;
-  if (g_occludersPending)
-    drawPendingOccluders(dev);
   if (remix::enabled()) {
     if (captureDraw(type, baseVertex, minIndex, numVertices, startIndex, primCount))
       skycap::capture(dev, type, baseVertex, minIndex, numVertices, startIndex, primCount);
@@ -2612,7 +2595,7 @@ void dumpStatistics(FILE *out) {
   const double f = frames ? frames : 1;
   if (queryProfiling())
     g_queryProfile.dump(out, f);
-  fprintf(out, "== D3D9 per frame (%u frames): DIP %.1f (%.0f prims) DP %.1f DIPUP %.1f DPUP %.1f, depth DIP %.1f (occlusion queries %.1f: visible %.1f hidden %.1f; occluder passes %.1f, with another view than the query began with %.1f, depth clears after one %.1f)\n",
+  fprintf(out, "== D3D9 per frame (%u frames): DIP %.1f (%.0f prims) DP %.1f DIPUP %.1f DPUP %.1f, depth DIP %.1f (occlusion queries %.1f: visible %.1f hidden %.1f; occluder passes %.1f, whose view was not the last draw's %.1f, depth clears after one %.1f)\n",
           frames, g_stats.dip.exchange(0) / f, g_stats.dipPrims.exchange(0) / f, g_stats.dp.exchange(0) / f,
           g_stats.dipUP.exchange(0) / f, g_stats.dpUP.exchange(0) / f, g_stats.depthDraws.exchange(0) / f, g_stats.occlusionQueries.exchange(0) / f,
           g_stats.queriesVisible.exchange(0) / f, g_stats.queriesHidden.exchange(0) / f, g_stats.occluderDraws.exchange(0) / f,
