@@ -3348,8 +3348,17 @@ std::vector<std::array<std::array<float, 3>, 3>> faceTriangles(const Bsp &bsp, i
     for (int u = 0; u + 1 < size; ++u) {
       const auto &a = grid[size_t(v) * size + u], &b = grid[size_t(v) * size + u + 1],
                  &c = grid[size_t(v + 1) * size + u], &d = grid[size_t(v + 1) * size + u + 1];
-      out.push_back({a, c, d});
-      out.push_back({a, d, b});
+      // The cell's diagonal as build() has it (alternating, as the engine's
+      // displacements do): by the other, an overlay's pieces lay on triangles
+      // the surface does not have, above it across half of a cell that is
+      // not flat and under it across the other.
+      if ((v * size + u) % 2) {
+        out.push_back({a, c, b});
+        out.push_back({b, c, d});
+      } else {
+        out.push_back({a, c, d});
+        out.push_back({a, d, b});
+      }
     }
   return out;
 }
