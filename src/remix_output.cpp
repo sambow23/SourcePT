@@ -7029,7 +7029,19 @@ void onDraw(const Draw &d) {
   // OPENREMIX_PROXY_MODEL_DECAL_LIFT scales the model lift (0: none).
   constexpr float kStudioDecalOffset = 0.1f; // inches
   struct DecalLift { float offset, vertexStep, vertexCap, drawGap, riseCap; }; // inches
-  static const DecalLift kWorldLift = {0.15f, 0.001f, 0.3f, 0.004f, 1.2f}, kModelLift = [] {
+  // The world's lift is small: it stacks over the frame's decal draws, and
+  // by the first values (0.15 and up to 1.2 more, 0.3 a draw) a bullet hole
+  // drawn after a map's own decals stood an inch off its wall (de_dust2:
+  // 1.03), where it shows beside the hole it marks when seen at an angle.
+  // Above the overlays and the second layers of displacements (0.1, 0.05).
+  // OPENREMIX_PROXY_WORLD_DECAL_LIFT scales it.
+  static const DecalLift kWorldLift = [] {
+    char v[32] = {};
+    const float scale = GetEnvironmentVariableA("OPENREMIX_PROXY_WORLD_DECAL_LIFT", v, sizeof(v))
+                            ? std::max(0.0f, float(std::atof(v)))
+                            : 1.0f;
+    return DecalLift{0.12f * scale, 0.00025f * scale, 0.075f * scale, 0.002f * scale, 0.3f * scale};
+  }(), kModelLift = [] {
     char v[32] = {};
     const float scale = GetEnvironmentVariableA("OPENREMIX_PROXY_MODEL_DECAL_LIFT", v, sizeof(v))
                             ? std::max(0.0f, float(std::atof(v)))
