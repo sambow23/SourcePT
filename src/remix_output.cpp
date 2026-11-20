@@ -7061,7 +7061,13 @@ void onDraw(const Draw &d) {
   if (lifted) // the next draw starts above this one's last vertex
     rise = std::min(rise + std::min(float(d.numVertices) * lifting.vertexStep, lifting.vertexCap) + lifting.drawGap,
                     lifting.riseCap);
-  g_liftVertexStep = lifted ? lifting.vertexStep : 0;
+  // The step is what keeps a batch's overlapping decals apart (the runtime
+  // peels paint by its distance along the ray: two layers at one height are
+  // one). Capped as it was, every vertex past the cap's (the 300th) stood at
+  // one height: of scorch marks over one another the last of the batch, those
+  // on one displacement, showed as a single faint layer. The cap is spread
+  // over the draw's vertices instead.
+  g_liftVertexStep = lifted ? std::min(lifting.vertexStep, lifting.vertexCap / float(std::max<uint32_t>(d.numVertices, 1))) : 0;
   g_liftVertexCap = lifting.vertexCap;
   const float windingSign = lifted ? faceNormalSign(d.cullMode) : 1;
 
