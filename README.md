@@ -23,6 +23,7 @@ Multiplayer works out of the box since everything lives in the wrapper.
 * Half-Life 2 RTX
 * Portal with RTX
 * Portal 2
+* Fistful of Frags
 
 ## Garry's Mod Installation Instructions
 - Ensure you're on the `main` branch of Garry's Mod on Steam (not `x86-64`)
