@@ -5932,11 +5932,15 @@ void submit(MaterialLookup lookup, const float *eye) {
     blend.writeMask = 15;
     blend.textureAlphaOperation = 1; // select argument 1: the vertex alpha
     blend.textureAlphaArg1Source = 2;
+    // Rasterized, the second layer is drawn before the overlays on it (2
+    // below): by the depth of their meshes' centres the two changed places
+    // as the camera turned, the sand over the paper on it and under it.
+    remixapi_InstanceInfoRasterOrderEXT order{REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_RASTER_ORDER_EXT, &blend, 1};
     remixapi_InstanceInfo info = {};
     info.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
     remixapi_InstanceIdentityEXT identity = {};
     identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
-    identity.pNext = &blend;
+    identity.pNext = &order;
     identity.instanceId = group.id;
     identity.classification = REMIXAPI_INSTANCE_STATIC_EXT;
     identity.rasterVisible = 1;
@@ -5966,11 +5970,13 @@ void submit(MaterialLookup lookup, const float *eye) {
     blend.srcAlphaBlendFactor = blend.srcColorBlendFactor;
     blend.dstAlphaBlendFactor = blend.dstColorBlendFactor;
     blend.writeMask = 15;
+    // (Over the second layers of displacements, 1 above.)
+    remixapi_InstanceInfoRasterOrderEXT order{REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_RASTER_ORDER_EXT, &blend, 2};
     remixapi_InstanceInfo info = {};
     info.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
     remixapi_InstanceIdentityEXT identity = {};
     identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
-    identity.pNext = &blend;
+    identity.pNext = &order;
     identity.instanceId = group.id;
     identity.classification = REMIXAPI_INSTANCE_STATIC_EXT;
     identity.rasterVisible = 1;
