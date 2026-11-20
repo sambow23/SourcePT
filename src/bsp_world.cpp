@@ -962,6 +962,7 @@ bool invertTransform(const float in[2][3], float out[2][3]) {
 struct LayerStatistics {
   uint32_t materials = 0, noHash = 0, fourWay = 0, modulated = 0, modulateUnread = 0, perTexel = 0;
   uint32_t displacements = 0, layered = 0, flat = 0, withoutTexture = 0;
+  uint32_t converted = 0; // second layers with a PBR conversion
   uint32_t baseTriangles = 0, secondTriangles = 0, blendedTriangles = 0;
   uint32_t brushFaces = 0; // two-layer materials on faces without a displacement (no alpha: the first texture)
   float alphaMin = 255, alphaMax = 0;
@@ -2337,6 +2338,22 @@ SecondLayer secondLayer(int base, bool use) {
   m.categories &= ~uint32_t(REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE | REMIXAPI_INSTANCE_CATEGORY_BIT_HIDDEN);
   m.noCull = g_world.materials[base].noCull;
   m.pointSample = g_world.materials[base].pointSample || texturePointSample(kv.values["$basetexture2"]);
+  // Its PBR conversion as the first layer's, by its own maps ($bumpmap2).
+  // Without one its triangles (the layer alone, where the blend is 1) were
+  // the legacy material beside the sheets over the first layer, which shade
+  // as the converted surface under them: the second texture stood out in
+  // blocks, lighter, where a displacement is all the second.
+  if (pbr::enabled()) {
+    KeyValues second = kv;
+    second.values["$basetexture"] = kv.values["$basetexture2"];
+    second.values.erase("$bumpmap");
+    if (kv.values.count("$bumpmap2"))
+      second.values["$bumpmap"] = kv.values["$bumpmap2"];
+    if ((m.shading.pbr = materialPbr(second)).active) {
+      m.shading.base = m.baseTexture;
+      ++stats.converted;
+    }
+  }
   if (m.candidates.empty()) {
     ++stats.noHash;
   } else {
@@ -6456,13 +6473,13 @@ void dumpStatistics(FILE *out) {
       dropped += layer.material >= 0 && g_world.materials[layer.material].blendDropped;
     }
     fprintf(out,
-            "   BSP second layers ($basetexture2): %u materials on %u displacements (alpha %.0f..%.0f) | layered %u: "
+            "   BSP second layers ($basetexture2): %u materials (%u with a PBR conversion) on %u displacements (alpha %.0f..%.0f) | layered %u: "
             "triangles first texture %u, second texture %u, blended (decal sheet, vertex alpha) %u in %zu groups (%u "
             "meshes) | not layered: alpha 0 everywhere %u, second texture without a hash %u (%u materials) | second "
             "textures not uploaded yet %u | $blendmodulatetexture: %u read (%u per texel, OPENREMIX_PROXY_BLEND_MODULATION; "
             "masks never uploaded %u), %u not read | 4-way "
             "blend materials (layers 3-4 not drawn) %u | on %u faces without a displacement (first texture only)\n%s",
-            l.materials, l.displacements, l.displacements ? l.alphaMin : 0.0f, l.alphaMax, l.layered, l.baseTriangles,
+            l.materials, l.converted, l.displacements, l.displacements ? l.alphaMin : 0.0f, l.alphaMax, l.layered, l.baseTriangles,
             l.secondTriangles, l.blendedTriangles, g_world.layerGroups.size(), meshes, l.flat, l.withoutTexture,
             l.noHash, waiting, l.modulated, l.perTexel, dropped, l.modulateUnread, l.fourWay, l.brushFaces, l.names.c_str());
   }
